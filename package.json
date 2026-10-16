@@ -1,0 +1,31 @@
+{
+  "name": "brinky",
+  "productName": "Brinky",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A voice companion that shows you where to click.",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/dudujuju828/brinky.git"
+  },
+  "type": "module",
+  "main": "app/main.mjs",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "start": "electron .",
+    "test": "node --test test/*.test.mjs",
+    "smoke": "node scripts/smoke.mjs",
+    "package": "node scripts/package.mjs"
+  },
+  "dependencies": {
+    "jose": "^6.1.0",
+    "openai": "^7.21.0",
+    "proper-lockfile": "^4.1.2"
+  },
+  "devDependencies": {
+    "@electron/packager": "^18.4.4",
+    "electron": "44.7.0",
+    "esbuild": "^0.25.0",
+    "playwright": "^1.58.0"
+  }
+}

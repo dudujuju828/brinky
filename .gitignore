@@ -1,0 +1,15 @@
+node_modules/
+release/
+app/chatgpt-runtime.mjs
+*.log
+.env
+.env.*
+!.env.example
+.work/
+TEST-RESULTS.json
+preferences.json
+elevenlabs-key.bin
+*.pem
+*.key
+credentials*.json
+tokens*.json

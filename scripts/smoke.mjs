@@ -1,0 +1,64 @@
+import { _electron as electron } from 'playwright';
+import { mkdir, writeFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
+import assert from 'node:assert/strict';
+const work=resolve('.work/brinky-test');
+await mkdir(work,{recursive:true});
+const env={...process.env,BRINKY_TEST_MODE:'1',BRINKY_DATA_DIR:resolve(work,'profile')};
+delete env.ELECTRON_RUN_AS_NODE;
+const instance=await electron.launch({...(process.env.BRINKY_TEST_EXE?{executablePath:process.env.BRINKY_TEST_EXE,args:[]}:{args:['.']}),cwd:process.cwd(),env,timeout:30000});
+const findings=[];
+try {
+  let panel;
+  for(let i=0;i<50;i++){
+    panel=instance.windows().find(p=>p.url().endsWith('/index.html'));
+    if(panel)break;
+    await new Promise(resolve=>setTimeout(resolve,100));
+  }
+  assert.ok(panel,'Main panel created');
+  await panel.waitForFunction(()=>Boolean(window.brinky));
+  await panel.waitForFunction(()=>document.querySelector('#display').options.length>0);
+  const errors=[]; panel.on('pageerror',error=>errors.push(error.message));
+  const call=(action,payload)=>panel.evaluate(([action,payload])=>window.brinky.call(action,payload),[action,payload]);
+  const state=()=>call('state');
+  assert.equal((await state()).session.sharing,false);
+  assert.equal((await call('ask','Where do I click?')).ok,false);
+  findings.push('Disconnected requests are blocked before capture/inference.');
+  await call('clear');
+  await panel.screenshot({path:resolve(work,'welcome.png')});
+  assert.equal((await call('demo')).ok,true);
+  const overlay=instance.windows().find(p=>p.url().endsWith('/overlay.html'));
+  assert.ok(overlay);
+  await overlay.waitForFunction(()=>document.querySelector('#text').textContent==='Click here');
+  const geometry=await overlay.locator('#ring').boundingBox();assert.ok(geometry.width>32&&geometry.x>0);
+  await call('stop');
+  const hidden=await instance.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows().find(w=>w.getTitle()==='Brinky pointer').isVisible());assert.equal(hidden,false);
+  findings.push('Pointer preview renders; Stop hides the overlay.');
+  await call('clear');
+  await call('connect');assert.equal((await state()).session.sharing,true);
+  assert.ok((await state()).models.length);
+  await call('settings',{speak:false});
+  await call('ask','Where is the menu?');
+  const result=await state();assert.equal(result.phase,'ready');assert.equal(result.answer.title,'Open the menu');
+  await panel.waitForFunction(()=>document.querySelector('#answerTitle').textContent==='Open the menu');
+  await panel.screenshot({path:resolve(work,'lesson.png')});
+  findings.push('Mock account → model discovery → screenshot input → structured guidance → rendered step succeeds.');
+  const pending=call('ask','Next');await new Promise(resolve=>setTimeout(resolve,40));await call('stop');await pending;
+  assert.equal((await state()).phase,'idle');
+  findings.push('Cancellation prevents a late response from showing a pointer.');
+  await call('disconnect');assert.equal((await state()).models.length,0);assert.equal((await state()).answer,null);
+  findings.push('Disconnect clears account models and conversation.');
+  const encryption=await instance.evaluate(({safeStorage})=>{const text='Brinky test';return safeStorage.isEncryptionAvailable()&&safeStorage.decryptString(safeStorage.encryptString(text))===text;});
+  assert.equal(encryption,true);findings.push('Windows credential encryption round-trip succeeds.');
+  const capture=await instance.evaluate(async({desktopCapturer,screen})=>{
+    const displays=screen.getAllDisplays();
+    const sources=await desktopCapturer.getSources({types:['screen'],thumbnailSize:{width:640,height:480}});
+    return displays.map(d=>({mapped:sources.some(s=>s.display_id===String(d.id)&&!s.thumbnail.isEmpty()),scale:d.scaleFactor}));
+  });
+  assert.ok(capture.length&&capture.every(d=>d.mapped));
+  findings.push(`Native screen capture maps all ${capture.length} connected displays; no captured pixels were transmitted.`);
+  assert.deepEqual(errors,[]);findings.push('No renderer exceptions.');
+  const report={passed:true,findings,liveChatGPTInference:'Not exercised by this mock smoke test.',microphone:'Not exercised by this smoke test.'};
+  await writeFile(resolve(work,'results.json'),JSON.stringify(report,null,2));
+  console.log(JSON.stringify(report,null,2));
+}finally{await instance.close();}

@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"><title>Brinky</title><link rel="stylesheet" href="style.css"></head>
+<body>
+  <header class="titlebar"><div class="brand"><span class="mascot small"><i></i><i></i></span><span>brinky<span class="brand-dot">.</span></span></div><div class="window-controls"><button id="minimize" title="Keep Brinky floating" aria-label="Minimize to companion">−</button><button id="close" title="Quit Brinky" aria-label="Quit Brinky">×</button></div></header>
+  <main>
+    <div class="topline"><span class="eyebrow">YOUR LITTLE DESKTOP GUIDE</span><span class="status" id="status"><b></b>Ready to meet you</span></div>
+    <nav aria-label="Brinky views"><button class="active" id="guideTab">Guide</button><button id="connectionTab">Connection <span id="connectionDot"></span></button></nav>
+    <section id="guideView">
+      <div id="welcome" class="welcome">
+        <div class="hero-illustration" aria-hidden="true"><div class="orbit orbit-one"></div><div class="orbit orbit-two"></div><span class="spark s1">✦</span><span class="spark s2">+</span><div class="mascot hero-mascot"><i></i><i></i></div><div class="mini-label">a nudge in the right direction <span>↗</span></div></div>
+        <h1>A little help.<br>Right where you need it.</h1>
+        <p class="intro">Ask out loud. I’ll look at your screen and show you the next step.</p>
+        <button id="welcomeConnect" class="primary wide">Connect ChatGPT <span>↗</span></button>
+      </div>
+      <div id="lesson" class="lesson" hidden>
+        <div class="lesson-header"><span class="eyebrow" id="lessonTag">ONE STEP AT A TIME</span><button id="newLesson" class="text-button">New lesson</button></div>
+        <p class="question" id="question"></p>
+        <div class="answer-card"><div class="answer-top"><span class="step-icon">↗</span><span id="answerMeta">BRINKY SAYS</span></div><h2 id="answerTitle"></h2><p id="answerText"></p></div>
+        <div class="lesson-actions"><button class="primary" id="next">Done, what’s next? <span>→</span></button><button class="secondary" id="repeat" title="Repeat instruction">↺ Repeat</button></div>
+      </div>
+      <div class="working" id="working" hidden><span class="spinner"></span><div><strong id="workingTitle">Looking at your screen…</strong><p id="workingDetail">Finding the next step for you.</p></div></div>
+      <div class="composer-wrap">
+        <div class="composer"><textarea id="prompt" rows="2" placeholder="How do I add a bevel in Blender?" aria-label="Ask Brinky"></textarea><button id="send" aria-label="Send question" title="Send question">↑</button></div>
+        <div class="voice-row"><button id="mic" class="mic-button"><svg width="18" height="22" viewBox="0 0 18 22" fill="none" aria-hidden="true"><rect x="6" y="1" width="6" height="12" rx="3" stroke="currentColor" stroke-width="1.8"/><path d="M2 9v2a7 7 0 0014 0V9M9 18v3M5 21h8" stroke="currentColor" stroke-width="1.8"/></svg><span id="micText">Speak to Brinky</span></button><button class="stop-button" id="stop" title="Stop voice, response and pointer">■ Stop</button></div>
+        <p class="shortcut" id="shortcut">or press <kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>B</kbd> anywhere</p>
+        <p class="subtle" id="dictationHint" hidden>Hold M4, speak, then release to send.</p>
+      </div>
+      <div class="guide-options"><label><span class="screen-icon">▣</span><select id="display" aria-label="Screen to share"></select></label><label class="speak-toggle"><input type="checkbox" id="speak" checked> Speak answers</label></div>
+      <p class="privacy-note" id="privacyNote">When you ask, a screenshot of this screen is sent to ChatGPT. Your microphone stays off until you speak.</p>
+      <button id="demo" class="demo-button">Try the glowing pointer <span>↗</span></button>
+    </section>
+    <section id="connectionView" hidden>
+      <div class="connection-hero"><span class="eyebrow">BRING YOUR OWN BRAIN</span><h1>Your ChatGPT.<br>Your Brinky.</h1><p>Use your ChatGPT plan for a little guidance, right here on your desktop.</p></div>
+      <div class="connection-card"><div class="connection-logo"><img src="chatgpt.svg" width="27" height="27" alt=""><strong>ChatGPT</strong><span class="connection-badge" id="connectionBadge">Not connected</span></div><p id="accountName">Connect securely in your browser.</p><p id="planDescription" class="subtle">Eligible ChatGPT Plus and Pro plans. Usage counts toward your plan allowance.</p><button id="connect" class="chatgpt-button"><img src="chatgpt.svg" width="21" height="21" alt=""><span id="connectLabel">Continue with ChatGPT</span></button><button id="cancelLogin" class="secondary wide" hidden>Cancel sign-in</button><div class="account-actions" id="accountActions" hidden><button id="usage" class="text-button">Manage usage ↗</button><button id="disconnect" class="text-button">Disconnect</button></div></div>
+      <div class="model-section"><div class="label-row"><label for="model">AI model</label><button id="refreshModels" class="text-button">Refresh</button></div><select id="model" class="model-select"><option value="">Connect to load your models</option></select><p class="subtle">Choose from the models available to your account.</p></div>
+      <div class="model-section"><div class="label-row"><label for="replyVoice">Reply voice</label></div><select id="replyVoice" class="model-select"><option value="elevenlabs">ElevenLabs · George (natural)</option><option value="windows">Windows · robotic (free)</option></select><p id="voiceDescription" class="subtle"></p></div>
+      <div class="model-section"><div class="label-row"><label for="voiceInput">Voice input</label></div><select id="voiceInput" class="model-select"><option value="wispr">Wispr Flow · desktop app</option><option value="windows">Windows · built in (free)</option></select><p id="inputDescription" class="subtle"></p><label class="subtle"><input type="checkbox" id="holdToTalk"> Hold M4 to talk and send automatically</label></div>
+      <div class="connection-note"><span>↗</span><p>Brinky shows you the way. You do the clicking, learning one step at a time.</p></div>
+    </section>
+    <div class="error-box" id="error" role="alert" hidden></div>
+    <footer><span>made for the curious.</span><span>BRINKY · 0.1</span></footer>
+  </main>
+  <script src="ui.js"></script>
+</body></html>

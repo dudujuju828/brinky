@@ -1,0 +1,4 @@
+document.getElementById('open').onclick=()=>window.brinky.call('show');
+document.getElementById('talk').onclick=()=>window.brinky.call('voice');
+function render(s){const active=['listening','starting-mic'].includes(s.phase)||Boolean(s.flow),wispr=s.settings.inputProvider==='wispr';document.getElementById('talk').classList.toggle('listening',active);document.getElementById('talk').title=wispr?'Hold M4 to speak and send':'Speak · Ctrl + Alt + B';document.getElementById('hint').textContent=s.flow?.phase==='transcribing'?'finishing your words…':s.flow?'listening · release M4':active?'I’m listening…':s.phase==='thinking'?'finding the next step…':s.error?'open Brinky to continue':s.session.sharing?(wispr&&s.holdShortcut?'hold M4 · release to send':wispr?'Ctrl + Alt + B · then Flow':'Ctrl + Alt + B to talk'):'connect your ChatGPT';}
+window.brinky.onState(render);window.brinky.call('state').then(render);
