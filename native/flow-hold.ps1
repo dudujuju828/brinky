@@ -22,6 +22,10 @@ public static class BrinkyFlowHold {
   [DllImport("user32.dll")] static extern bool ShowWindowAsync(IntPtr window, int command);
   [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr window);
   [DllImport("user32.dll")] static extern bool AllowSetForegroundWindow(uint process);
+  [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
+  [DllImport("user32.dll")] static extern bool AttachThreadInput(uint from, uint to, bool attach);
+  [DllImport("user32.dll")] static extern bool BringWindowToTop(IntPtr window);
+  [DllImport("user32.dll")] static extern IntPtr SetFocus(IntPtr window);
   [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
   [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr window, out uint process);
   [DllImport("user32.dll")] static extern bool GetCursorPos(out POINT point);
@@ -36,7 +40,7 @@ public static class BrinkyFlowHold {
   static bool enabled, physicalHeld, pending, armed, released;
   static long id, sequence, began, heartbeat;
   static void Emit(string type, long token) { Console.WriteLine("{\"type\":\""+type+"\",\"id\":"+token+"}"); Console.Out.Flush(); }
-  static bool Chord() { return keys[0x77] && (keys[0xA2] || keys[0xA3]) && (keys[0xA0] || keys[0xA1]); }
+  static bool Chord() { return keys[0x77] && !keys[0xA2] && !keys[0xA3] && !keys[0xA0] && !keys[0xA1] && !keys[0xA4] && !keys[0xA5]; }
   static void Clear() { pending=false; armed=false; released=false; }
   static void Cancel() { if (pending) { Clear(); Emit("cancelled",id); } }
   static bool IsTarget(IntPtr window) { uint pid; return window!=IntPtr.Zero && IsWindow(window) && GetWindowThreadProcessId(window,out pid)!=0 && pid==owner; }
@@ -46,13 +50,35 @@ public static class BrinkyFlowHold {
     AllowSetForegroundWindow(owner);
     ShowWindowAsync(target,IsIconic(target)?9:5);
     SetForegroundWindow(target);
+    if (GetForegroundWindow()==target) return;
+    // An existing editor can retain the foreground input queue. Join it only
+    // for this explicit talk-key activation, and always detach immediately.
+    uint ignored;
+    uint current=GetCurrentThreadId();
+    uint foreground=GetWindowThreadProcessId(GetForegroundWindow(),out ignored);
+    uint destination=GetWindowThreadProcessId(target,out ignored);
+    bool joinedForeground=false, joinedDestination=false;
+    try {
+      if (foreground!=0 && foreground!=current) joinedForeground=AttachThreadInput(current,foreground,true);
+      if (destination!=0 && destination!=current && destination!=foreground) joinedDestination=AttachThreadInput(current,destination,true);
+      BringWindowToTop(target); SetForegroundWindow(target);
+      if (GetForegroundWindow()==target && (joinedDestination || destination==current || destination==foreground && joinedForeground)) SetFocus(target);
+    } finally {
+      if (joinedDestination) AttachThreadInput(current,destination,false);
+      if (joinedForeground) AttachThreadInput(current,foreground,false);
+    }
   }
   static void ResetKeys() {
     Array.Clear(keys,0,keys.Length);
     foreach (int key in new[]{0xA2,0xA3,0xA0,0xA1,0xA4,0xA5,0x77}) keys[key]=(GetAsyncKeyState(key)&0x8000)!=0;
     physicalHeld=Chord();
   }
-  static void ReleaseIfReady() { if (pending && armed && !physicalHeld && !released) { released=true; Emit("released",id); } }
+  static void ReleaseIfReady() { if (pending && !physicalHeld && !released) { released=true; Emit("released",id); } }
+  static void Press() {
+    if (!enabled || physicalHeld) return;
+    Cancel(); id=++sequence; pending=true; armed=false; released=false; began=clock.ElapsedMilliseconds;
+    physicalHeld=true; FocusTarget(); Emit("pressed",id);
+  }
   static void Key(KEYBOARD input) {
     if (input.key>=255 || input.scan==0xFF) return;
     int key=input.key;
@@ -67,8 +93,7 @@ public static class BrinkyFlowHold {
     bool chord=Chord();
     if (chord && !physicalHeld && enabled) {
       // A new physical press always supersedes a stale transcription session.
-      Cancel(); id=++sequence; pending=true; armed=false; released=false; began=clock.ElapsedMilliseconds;
-      FocusTarget(); Emit("pressed",id);
+      Press();
     }
     physicalHeld=chord;
     ReleaseIfReady();
@@ -123,12 +148,17 @@ public static class BrinkyFlowHold {
             if(parts[0]=="target"){var candidate=new IntPtr(token);if(IsTarget(candidate))target=candidate;continue;}
             if(parts[0]=="enable"){enabled=token==1;if(!enabled)Clear();continue;}
             if(parts[0]=="reset"){Cancel();ResetKeys();continue;}
+            if(parts[0]=="press"){
+              if((GetAsyncKeyState(0x77)&0x8000)!=0){keys[0x77]=true;Press();}
+              continue;
+            }
             if(token!=id)continue;
             if(parts[0]=="focus" && pending)FocusTarget();
-            else if(parts[0]=="begin" && pending && !armed){armed=true;Emit("recording",id);ReleaseIfReady();}
+            else if(parts[0]=="begin" && pending && !armed){armed=true;ReleaseIfReady();}
             else if(parts[0]=="cancel" || parts[0]=="complete")Clear();
           }
           if(pending && clock.ElapsedMilliseconds-began>180000)Cancel();
+          if(physicalHeld && (GetAsyncKeyState(0x77)&0x8000)==0){keys[0x77]=false;physicalHeld=false;ReleaseIfReady();}
           if(clock.ElapsedMilliseconds-heartbeat>=1000){heartbeat=clock.ElapsedMilliseconds;Emit("alive",0);}
         };
         try {timer.Start();Emit("ready",0);Application.Run();}

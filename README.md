@@ -28,19 +28,19 @@ npm start
 ## Hold to talk with Wispr Flow
 
 1. Install and sign in to the Wispr Flow desktop app, then leave it running.
-2. In Flow’s shortcut settings, add **Ctrl + Shift + F8** as a **Push to talk** binding.
+2. Leave Flow’s usual dictation shortcut unchanged. Brinky uses Flow’s desktop start/stop commands; do not bind its talk key in Flow.
 3. In Brinky, choose **Connection → Voice input → Wispr Flow** and enable **Hold M4 to talk and send automatically**.
-4. Hold **Ctrl + Shift + F8**, speak after Flow’s recording cue, then release. Brinky focuses its question box and submits Flow’s completed transcript automatically.
+4. Hold **F8**, speak after Flow’s recording cue, then release. Brinky first confirms that its question box has focus, then starts Flow. Release stops Flow and submits the completed transcript automatically.
 
-The current UI calls this shortcut **M4**, after the original setup’s keyboard macro key. Any keyboard can use Ctrl + Shift + F8 directly. A programmable keyboard can map a key to that chord, keeping it held until the physical key is released. No keyboard firmware is included.
+The current UI calls this shortcut **M4**, after the original setup’s keyboard macro key. Any keyboard can use F8 directly. A programmable keyboard can map a key to plain F8, keeping it held until the physical key is released. No keyboard firmware is included. If upgrading from the earlier shared-shortcut setup, change the macro from Ctrl + Shift + F8 to F8.
 
 M4 focuses the end of an existing draft so you can continue it. Brinky only submits after new text arrives; pressing the key alone never sends an unchanged draft. A fresh M4 press replaces a stuck talk-key session. The chat box gains a green outline after Brinky confirms focus.
 
 Brinky restores hidden or minimized windows, retries focus for up to five seconds, and tolerates brief activation changes while Flow starts. A deliberate click into another app, Alt+Tab, **Esc**, **Stop**, or hiding Brinky cancels automatic sending. If focus cannot be recovered or Flow inserts no text, your draft remains available and Brinky shows a message. Regular typing and pasting outside a talk-key session still require Enter.
 
-The Windows helper uses background Raw Input, so it does not depend on a low-level keyboard hook staying installed. A heartbeat detects an unresponsive helper and restarts it automatically. It observes only the relevant shortcut keys and mouse-button cancellation events; it does not log typing or send synthetic keystrokes.
+F8 is registered globally by Brinky, and the Windows helper uses background Raw Input for key release. A heartbeat detects an unresponsive helper and restarts it automatically. It observes only the relevant shortcut keys and mouse-button cancellation events; it does not log typing or send synthetic keystrokes. The focus handoff verifies both the app window and its text field before invoking `wispr-flow://start-hands-free`; release invokes `wispr-flow://stop-hands-free`. These handlers were verified in the installed Flow 1.6.1174 code. The protocol has no recording-status acknowledgement, so wait for Flow’s own recording cue before speaking.
 
-For manual dictation, use **Ctrl + Alt + B** to focus Brinky, dictate using your configured Flow shortcut, and press Enter. Brinky observes the hold shortcut without simulating or consuming it. Flow uses its own account and settings; Brinky needs no Flow API key.
+For manual dictation, use **Ctrl + Alt + B** to focus Brinky, dictate using your configured Flow shortcut, and press Enter. Your usual Flow shortcuts remain available in other apps. Flow uses its own account and settings; Brinky needs no Flow API key.
 
 ## Reply voices
 

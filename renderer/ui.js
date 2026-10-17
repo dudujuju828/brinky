@@ -5,7 +5,7 @@ function syncFlow(state) {
   if (!state.flow) { clearTimeout(flowSendTimer); flowSendTimer=undefined; clearInterval(flowValueTimer); flowDraft=undefined; return; }
   if (flowDraft?.id !== state.flow.id) {
     clearTimeout(flowSendTimer); flowSendTimer=undefined; clearInterval(flowValueTimer);
-    flowDraft={id:state.flow.id,changed:false,submitted:false,readyPending:false,baseline:$('prompt').value,lastValue:$('prompt').value,lastChange:performance.now()};
+    flowDraft={id:state.flow.id,changed:false,submitted:false,readyPending:false,readySince:0,baseline:$('prompt').value,lastValue:$('prompt').value,lastChange:performance.now()};
     tab('guide'); focusComposer();
     // Keep an existing draft and append dictation; never select or erase it.
     $('prompt').setSelectionRange($('prompt').value.length,$('prompt').value.length);
@@ -29,7 +29,9 @@ function pollFlowComposer() {
   if(!flowDraft||flowDraft.submitted||current?.flow?.id!==flowDraft.id)return;
   if(document.hasFocus())focusComposer();
   const focused=composerFocused();
-  if(current.flow.phase==='arming'&&focused&&!flowDraft.readyPending){
+  if(!focused)flowDraft.readySince=0;
+  else if(!flowDraft.readySince)flowDraft.readySince=performance.now();
+  if(current.flow.phase==='arming'&&focused&&performance.now()-flowDraft.readySince>=200&&!flowDraft.readyPending){
     const draft=flowDraft; draft.readyPending=true;
     call('flow-ready',{id:draft.id,focused:true}).finally(()=>{draft.readyPending=false;});
   }
@@ -86,9 +88,9 @@ function render(state) {
     $('next').textContent=state.answer.done?'Ask something new':'Done, what’s next? →';
   }
   $('working').hidden=!busy;
-  $('workingTitle').textContent=thinking?'Looking at your screen…':holding?(state.flow.phase==='recording'?'Ready for your words…':state.flow.phase==='transcribing'?'Finishing your words…':'Bringing Brinky to you…'):state.phase==='starting-mic'?'Getting your microphone ready…':'I’m listening.';
-  document.querySelector('.composer').classList.toggle('dictating',holding&&state.flow.phase!=='arming');
-  $('workingDetail').textContent=thinking?'Finding one clear next step. Keep your app in place.':holding?(state.flow.phase==='transcribing'?'Your question will send as soon as Flow inserts it.':'Keep M4 held while speaking. Release to send. Esc cancels.'):state.transcript||'Speak naturally. I’ll send after a pause.';
+  $('workingTitle').textContent=thinking?'Looking at your screen…':holding?(state.flow.phase==='recording'?'Ready for your words…':['stopping','transcribing'].includes(state.flow.phase)?'Finishing your words…':state.flow.phase==='starting'?'Starting Wispr Flow…':'Bringing Brinky to you…'):state.phase==='starting-mic'?'Getting your microphone ready…':'I’m listening.';
+  document.querySelector('.composer').classList.toggle('dictating',holding&&['recording','stopping','transcribing'].includes(state.flow.phase));
+  $('workingDetail').textContent=thinking?'Finding one clear next step. Keep your app in place.':holding?(['stopping','transcribing'].includes(state.flow.phase)?'Your question will send as soon as Flow inserts it.':'Keep M4 held. Speak after Flow’s recording cue, then release to send. Esc cancels.'):state.transcript||'Speak naturally. I’ll send after a pause.';
   $('mic').classList.toggle('listening',listening); $('micText').textContent=listening?'Finish speaking':wispr?'Dictate with Wispr Flow':'Speak to Brinky';
   $('mic').title=wispr?'Focus the question box, then use your Wispr Flow shortcut':'Speak to Brinky';
   $('mic').disabled=thinking||holding; $('send').disabled=busy; $('demo').disabled=busy; $('newLesson').disabled=busy;
@@ -96,9 +98,9 @@ function render(state) {
   $('replyVoice').value=state.settings.speechProvider||'windows'; $('replyVoice').disabled=busy;
   $('voiceDescription').textContent=state.settings.speechProvider==='elevenlabs'?'George · Flash v2.5. Reply text is sent to ElevenLabs and uses your ElevenLabs credits. Recent repeats reuse the same audio.':'The original Windows voice. Free and runs on your PC.';
   $('voiceInput').value=state.settings.inputProvider||'windows'; $('voiceInput').disabled=busy;
-  $('inputDescription').textContent=wispr?'Hold M4 (Ctrl + Shift + F8) to speak, then release to send. Wispr Flow receives that shortcut directly; Brinky opens the question box and sends the completed transcript. Your usual Ctrl + Space still works separately.':'Brinky records and transcribes with Windows speech recognition. Free and runs on your PC.';
+  $('inputDescription').textContent=wispr?'Hold M4 (F8). Brinky focuses this box first, then starts Wispr Flow. Speak after Flow’s recording cue and release M4 to send. Ctrl + Space still works separately in other apps.':'Brinky records and transcribes with Windows speech recognition. Free and runs on your PC.';
   $('holdToTalk').checked=state.settings.holdToTalk; $('holdToTalk').disabled=busy||!wispr;
-  $('dictationHint').textContent=state.holdShortcut?'Hold M4 (Ctrl + Shift + F8), speak after Flow’s ping, then release. Brinky sends automatically. Esc cancels.':'Use Ctrl + Space in this box, then press Enter to ask.';
+  $('dictationHint').textContent=state.holdShortcut?'Hold M4 (F8), speak after Flow’s ping, then release. Brinky sends automatically. Esc cancels.':'Use Ctrl + Space in this box, then press Enter to ask.';
   $('dictationHint').hidden=!wispr;
   $('privacyNote').textContent=wispr?'Wispr Flow handles dictation using your Flow settings. When you send a question, a screenshot of your selected screen is sent to ChatGPT.':'When you ask, a screenshot of this screen is sent to ChatGPT. Your microphone stays off until you speak.';
   $('shortcut').hidden=state.shortcut==='Shortcut unavailable';

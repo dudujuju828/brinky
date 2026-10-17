@@ -6,6 +6,7 @@ import { createChatGPT, ChatGPTError, CHATGPT_USAGE_URL } from './chatgpt-runtim
 import { guidanceSchema, instructions, makeInput, parseGuidance, targetToRect } from './guidance.mjs';
 import { Voice } from './voice.mjs';
 import { FlowHold } from './flow-hold.mjs';
+import { WisprFlow } from './wispr-flow.mjs';
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const testMode = process.env.BRINKY_TEST_MODE === '1';
@@ -16,6 +17,7 @@ let panel, orb, overlay, tray, chatgpt, activeRequest, pointerTimer, quitting = 
 let pointer, history = [], lastDisplay, accountBusy = false;
 let flowTimer, flowFocusTimer, flowFocusDeadline, flowLostFocusAt = 0, flowWasOnTop = false;
 const flowUnavailableMessage = 'Reconnecting the M4 talk key… Your draft is safe.';
+const wispr = new WisprFlow(url => shell.openExternal(url));
 let state = {
   session: { status: 'disconnected', sharing: false }, models: [],
   settings: { model: '', displayId: '', speak: true, speechProvider: 'windows', inputProvider: 'windows', holdToTalk: true }, displays: [],
@@ -61,10 +63,9 @@ const flowHold = new FlowHold(event => {
     return;
   }
   if (!state.flow || state.flow.id !== event.id) return;
-  if (event.type === 'recording') state.flow.phase = 'recording';
-  else if (event.type === 'released') {
-    state.flow.phase = 'transcribing'; clearTimeout(flowTimer);
-    flowTimer = setTimeout(() => { endFlow(); state.error = 'Flow did not insert a transcript. Check that Wispr Flow is ready and has Ctrl + Shift + F8 under Push to talk.'; publish(); }, 30000);
+  if (event.type === 'released') {
+    void finishFlowCapture(event.id);
+    return;
   } else {
     endFlow();
     if (event.type === 'error') state.error = 'Could not observe the voice shortcut. Use Ctrl + Space in the question box, then press Enter.';
@@ -76,7 +77,31 @@ function endFlow(cancel = true) {
   const previous = state.flow; state.flow = null; clearTimeout(flowTimer); clearInterval(flowFocusTimer);
   flowLostFocusAt = 0;
   if (previous && panel && !panel.isDestroyed()) panel.setAlwaysOnTop(flowWasOnTop);
-  if (previous) flowHold.send(cancel ? 'cancel' : 'complete', previous.id);
+  if (previous) {
+    flowHold.send(cancel ? 'cancel' : 'complete', previous.id);
+    void wispr.stop(previous.id).catch(() => {
+      state.error = 'Could not stop Wispr Flow. Press Esc to stop its microphone.'; publish();
+    });
+  }
+}
+async function finishFlowCapture(id) {
+  if (state.flow?.id !== id) return;
+  state.flow.held = false;
+  if (state.flow.phase === 'arming') { endFlow(); publish(); return; }
+  if (['stopping', 'transcribing'].includes(state.flow.phase)) return;
+  state.flow.phase = 'stopping'; publish();
+  try {
+    const started = await wispr.stop(id);
+    if (state.flow?.id !== id) return;
+    if (!started) { endFlow(); publish(); return; }
+    state.flow.phase = 'transcribing'; clearTimeout(flowTimer);
+    flowTimer = setTimeout(() => {
+      endFlow(); state.error = 'Wispr Flow did not insert any text. Check that Flow is running and signed in, then hold M4 and wait for its recording cue.'; publish();
+    }, 30000);
+    publish();
+  } catch {
+    endFlow(); state.error = 'Could not stop Wispr Flow. Press Esc to stop its microphone.'; publish();
+  }
 }
 function requestFlowFocus() {
   if (!state.flow || !panel || panel.isDestroyed()) return;
@@ -110,7 +135,7 @@ function startFlowHold(id) {
   activeRequest?.abort(); activeRequest = undefined;
   voice.cancel(); clearPointer(); state.error = ''; state.phase = 'idle';
   flowWasOnTop = panel.isAlwaysOnTop(); panel.setAlwaysOnTop(true); panel.flashFrame(false);
-  state.flow = { id, phase: 'arming' };
+  state.flow = { id, phase: 'arming', held: true };
   flowFocusDeadline = Date.now() + 5000;
   flowTimer = setTimeout(() => { endFlow(); state.error = 'The talk-key session ended. Your draft is safe; hold M4 to continue.'; publish(); }, 150000);
   publish(); requestFlowFocus();
@@ -119,6 +144,16 @@ function startFlowHold(id) {
 function configureFlowHold() {
   endFlow(); globalShortcut.unregister('F8'); state.holdShortcut = false;
   const enabled = state.settings.inputProvider === 'wispr' && state.settings.holdToTalk;
+  if (enabled && !globalShortcut.register('F8', () => {
+    // Windows delivers this to Brinky even when another application's editor is
+    // active. Raw Input handles release; the helper deduplicates both press paths.
+    if (!flowHold.ready) { flowHold.start(); showPanel(); state.error = flowUnavailableMessage; publish(); }
+    else flowHold.send('press', 0);
+  })) {
+    flowHold.setEnabled(false);
+    state.error = 'F8 is already used by another app. Free that shortcut, then turn Hold M4 off and on.';
+    return;
+  }
   flowHold.setEnabled(enabled);
   if (enabled) {
     state.holdShortcut = flowHold.ready;
@@ -312,8 +347,17 @@ function installIPC() {
         case 'voice': toggleVoice(); break;
         case 'flow-ready': {
           if (event.sender !== panel.webContents || !state.flow || state.flow.id !== payload?.id || state.flow.phase !== 'arming') break;
-          if (!payload.focused || !panel.isFocused() || !panel.webContents.isFocused()) return { ok: false };
-          state.flow.phase = 'starting'; flowHold.send('begin', state.flow.id); break;
+          if (!payload.focused || !state.flow.held || !panel.isFocused() || !panel.webContents.isFocused()) return { ok: false };
+          const id = state.flow.id;
+          state.flow.phase = 'starting'; publish();
+          try {
+            const started = await wispr.start(id, () => state.flow?.id === id && state.flow.held && panel.isFocused() && panel.webContents.isFocused());
+            if (state.flow?.id === id && state.flow.phase === 'starting') state.flow.phase = started ? 'recording' : 'arming';
+          } catch {
+            if (state.flow?.id === id) endFlow();
+            throw new Error('Could not start Wispr Flow. Open Flow and sign in, then try M4 again.');
+          }
+          break;
         }
         case 'flow-submit': {
           if (event.sender !== panel.webContents || !state.flow || state.flow.id !== payload?.id || state.flow.phase !== 'transcribing') return { ok: false };
@@ -371,4 +415,9 @@ else {
   }).catch(error=>{ console.error('Brinky startup failed:',error.message); app.quit(); });
 }
 app.on('window-all-closed',()=>{});
-app.on('before-quit',()=>{quitting=true;stop();flowHold.close();chatgpt?.cancelSignIn();globalShortcut.unregisterAll();tray?.destroy();});
+app.on('before-quit',event=>{
+  if (quitting) return;
+  event.preventDefault(); quitting=true;
+  stop(); flowHold.close(); chatgpt?.cancelSignIn(); globalShortcut.unregisterAll(); tray?.destroy();
+  Promise.race([wispr.queue,new Promise(resolve=>setTimeout(resolve,3000))]).finally(()=>app.quit());
+});
