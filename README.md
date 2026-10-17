@@ -40,6 +40,8 @@ Brinky restores hidden or minimized windows, retries focus for up to five second
 
 F8 is registered globally by Brinky, and the Windows helper uses background Raw Input for key release. A heartbeat detects an unresponsive helper and restarts it automatically. It observes only the relevant shortcut keys and mouse-button cancellation events; it does not log typing or send synthetic keystrokes. The focus handoff verifies both the app window and its text field before invoking `wispr-flow://start-hands-free`; release invokes `wispr-flow://stop-hands-free`. These handlers were verified in the installed Flow 1.6.1174 code. The protocol has no recording-status acknowledgement, so wait for Flow’s own recording cue before speaking.
 
+When Flow is already running, the persistent helper delivers those fixed URLs directly to its Electron single-instance message window. This avoids launching another Flow executable for each command. It verifies the receiving process and keeps delivery off the keyboard thread. If no receiver exists, Brinky uses Windows' normal protocol launcher; an uncertain delivery is reported instead of blindly sending a duplicate. The direct transport uses [Electron's Windows single-instance framing](https://github.com/electron/electron/blob/v42.11.2/patches/chromium/feat_add_data_parameter_to_processsingleton.patch), an implementation detail that may change in later Flow versions. A delivery acknowledgement confirms receipt of the command, not microphone readiness.
+
 For manual dictation, use **Ctrl + Alt + B** to focus Brinky, dictate using your configured Flow shortcut, and press Enter. Your usual Flow shortcuts remain available in other apps. Flow uses its own account and settings; Brinky needs no Flow API key.
 
 ## Reply voices

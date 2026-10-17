@@ -5,7 +5,14 @@ const STOP = 'wispr-flow://stop-hands-free';
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 export class WisprFlow {
-  constructor(openExternal) { this.openExternal = openExternal; this.queue = Promise.resolve(); this.session = null; }
+  constructor(openExternal, sendDirect) { this.openExternal = openExternal; this.sendDirect = sendDirect; this.queue = Promise.resolve(); this.session = null; }
+  async dispatch(action) {
+    // The persistent helper can notify Flow's existing Electron instance
+    // directly, avoiding a fresh executable launch for each start and stop.
+    // Fall back only when nothing was delivered, never after an uncertain send.
+    if (await this.sendDirect?.(action)) return;
+    await this.openExternal(action === 'start' ? START : STOP);
+  }
   enqueue(task) {
     const result = this.queue.then(task);
     this.queue = result.catch(() => {});
@@ -18,7 +25,7 @@ export class WisprFlow {
       if (session.cancelled || !canStart()) return false;
       session.started = true;
       session.dispatchedAt = Date.now();
-      await this.openExternal(START);
+      await this.dispatch('start');
       // The protocol handler is asynchronous. Serialize stop behind the start
       // dispatch, including a very short key release or a cancelled focus attempt.
       session.dispatchedAt = Date.now();
@@ -32,7 +39,7 @@ export class WisprFlow {
     return this.enqueue(async () => {
       if (!session.started) return false;
       await delay(Math.max(0, 600 - (Date.now() - session.dispatchedAt)));
-      await this.openExternal(STOP);
+      await this.dispatch('stop');
       return true;
     });
   }

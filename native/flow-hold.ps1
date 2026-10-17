@@ -6,7 +6,9 @@ $code = @'
 using System;
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.IO;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Threading;
 using System.Windows.Forms;
 public static class BrinkyFlowHold {
@@ -14,6 +16,10 @@ public static class BrinkyFlowHold {
   [StructLayout(LayoutKind.Sequential)] struct HEADER { public uint type, size; public IntPtr device, param; }
   [StructLayout(LayoutKind.Sequential)] struct KEYBOARD { public ushort scan, flags, reserved, key; public uint message, extra; }
   [StructLayout(LayoutKind.Sequential)] struct POINT { public int x, y; }
+  [StructLayout(LayoutKind.Sequential)] struct COPYDATA { public IntPtr tag; public int bytes; public IntPtr data; }
+  [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern IntPtr FindWindowEx(IntPtr parent, IntPtr after, string className, string title);
+  [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern int GetWindowText(IntPtr window, StringBuilder text, int length);
+  [DllImport("user32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern IntPtr SendMessageTimeout(IntPtr window, uint message, IntPtr sender, ref COPYDATA data, uint flags, uint timeout, out IntPtr result);
   [DllImport("user32.dll", SetLastError=true)] static extern bool RegisterRawInputDevices(DEVICE[] devices, uint count, uint size);
   [DllImport("user32.dll")] static extern uint GetRawInputData(IntPtr input, uint command, IntPtr data, ref uint size, uint headerSize);
   [DllImport("user32.dll")] static extern short GetAsyncKeyState(int key);
@@ -33,6 +39,7 @@ public static class BrinkyFlowHold {
   [DllImport("user32.dll")] static extern IntPtr GetAncestor(IntPtr window, uint flags);
   static readonly bool[] keys = new bool[256];
   static readonly ConcurrentQueue<string> commands = new ConcurrentQueue<string>();
+  static readonly BlockingCollection<string> wisprCommands = new BlockingCollection<string>();
   static readonly uint headerSize = (uint)Marshal.SizeOf(typeof(HEADER));
   static readonly Stopwatch clock = Stopwatch.StartNew();
   static uint owner;
@@ -40,6 +47,44 @@ public static class BrinkyFlowHold {
   static bool enabled, physicalHeld, pending, armed, released;
   static long id, sequence, began, heartbeat;
   static void Emit(string type, long token) { Console.WriteLine("{\"type\":\""+type+"\",\"id\":"+token+"}"); Console.Out.Flush(); }
+  static string SendWispr(bool start) {
+    bool attempted=false;
+    try {
+      IntPtr window=IntPtr.Zero;
+      int session; using(var self=Process.GetCurrentProcess())session=self.SessionId;
+      // Electron's named message-only window receives second-instance commands.
+      // Ignore unnamed clipboard windows and verify the owning executable.
+      for(int count=0;count<256;count++) {
+        window=FindWindowEx(new IntPtr(-3),window,"Chrome_MessageWindow",null);
+        if(window==IntPtr.Zero)break;
+        var title=new StringBuilder(32768); GetWindowText(window,title,title.Capacity);
+        if(!Path.IsPathRooted(title.ToString()))continue;
+        uint pid; if(GetWindowThreadProcessId(window,out pid)==0)continue;
+        string executable;
+        try {
+          using(var process=Process.GetProcessById((int)pid)) {
+            if(!String.Equals(process.ProcessName,"Wispr Flow",StringComparison.OrdinalIgnoreCase) || process.SessionId!=session)continue;
+            executable=process.MainModule.FileName;
+          }
+        } catch { continue; }
+        if(!String.Equals(Path.GetFileName(executable),"Wispr Flow.exe",StringComparison.OrdinalIgnoreCase))continue;
+        // Only these two fixed URLs can leave this helper. No user text, auth
+        // data, app memory, or arbitrary command line is read or transmitted.
+        string url=start?"wispr-flow://start-hands-free":"wispr-flow://stop-hands-free";
+        string message="START\0"+Path.GetDirectoryName(executable)+"\0\""+executable+"\" \""+url+"\"\0";
+        IntPtr buffer=Marshal.StringToHGlobalUni(message);
+        try {
+          var data=new COPYDATA {tag=IntPtr.Zero,bytes=(message.Length+1)*2,data=buffer};
+          IntPtr result; attempted=true;
+          // Run on a separate worker so key release and Escape remain responsive.
+          IntPtr delivered=SendMessageTimeout(window,0x4A,IntPtr.Zero,ref data,0x23,300,out result);
+          if(delivered==IntPtr.Zero)return "wispr-uncertain";
+          return result!=IntPtr.Zero?"wispr-accepted":"wispr-unavailable";
+        } finally { Marshal.FreeHGlobal(buffer); }
+      }
+      return "wispr-unavailable";
+    } catch { return attempted?"wispr-uncertain":"wispr-unavailable"; }
+  }
   static bool Chord() { return keys[0x77] && !keys[0xA2] && !keys[0xA3] && !keys[0xA0] && !keys[0xA1] && !keys[0xA4] && !keys[0xA5]; }
   static void Clear() { pending=false; armed=false; released=false; }
   static void Cancel() { if (pending) { Clear(); Emit("cancelled",id); } }
@@ -136,6 +181,13 @@ public static class BrinkyFlowHold {
   }
   public static void Run(uint ownerPid, long firstSequence) {
     owner=ownerPid; sequence=firstSequence; ResetKeys();
+    var wisprWorker=new Thread(()=>{
+      foreach(string command in wisprCommands.GetConsumingEnumerable()) {
+        var parts=command.Split(':'); long token;
+        if(parts.Length==2 && Int64.TryParse(parts[1],out token))Emit(SendWispr(parts[0]=="wispr-start"),token);
+      }
+    });
+    wisprWorker.IsBackground=true; wisprWorker.Start();
     using (var window=new InputWindow()) {
       var devices=new[]{new DEVICE {page=1,usage=6,flags=0x2100,target=window.Handle},new DEVICE {page=1,usage=2,flags=0x2100,target=window.Handle}};
       if (!RegisterRawInputDevices(devices,(uint)devices.Length,(uint)Marshal.SizeOf(typeof(DEVICE)))) throw new Exception("Keyboard registration failed.");
@@ -149,6 +201,7 @@ public static class BrinkyFlowHold {
             var parts=command.Split(':'); long token;
             if(parts.Length!=2 || !Int64.TryParse(parts[1],out token))continue;
             if(parts[0]=="quit"){Application.ExitThread();return;}
+            if(parts[0]=="wispr-start" || parts[0]=="wispr-stop"){wisprCommands.Add(command);continue;}
             if(parts[0]=="target"){var candidate=new IntPtr(token);if(IsTarget(candidate))target=candidate;continue;}
             if(parts[0]=="enable"){enabled=token==1;if(!enabled)Clear();continue;}
             if(parts[0]=="reset"){Cancel();ResetKeys();continue;}
@@ -167,6 +220,7 @@ public static class BrinkyFlowHold {
         };
         try {timer.Start();Emit("ready",0);Application.Run();}
         finally {
+          wisprCommands.CompleteAdding();
           foreach (var device in devices) RegisterRawInputDevices(new[]{new DEVICE {page=device.page,usage=device.usage,flags=1,target=IntPtr.Zero}},1,(uint)Marshal.SizeOf(typeof(DEVICE)));
         }
       }

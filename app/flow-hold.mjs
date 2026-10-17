@@ -3,7 +3,29 @@ import { fileURLToPath } from 'node:url';
 
 const helper = fileURLToPath(new URL('../native/flow-hold.ps1', import.meta.url)).replace('app.asar', 'app.asar.unpacked');
 export class FlowHold {
-  constructor(onEvent) { this.onEvent = onEvent; this.ready = false; this.enabled = false; this.retryDelay = 250; }
+  constructor(onEvent) {
+    this.onEvent = onEvent; this.ready = false; this.enabled = false; this.retryDelay = 250;
+    this.wisprSequence = 0; this.wisprRequests = new Map();
+  }
+  failWisprRequests() {
+    for (const request of this.wisprRequests.values()) {
+      clearTimeout(request.timer); request.reject(new Error('Wispr command delivery was interrupted.'));
+    }
+    this.wisprRequests.clear();
+  }
+  wisprCommand(action) {
+    if (!['start', 'stop'].includes(action)) return Promise.reject(new Error('Invalid Wispr command.'));
+    if (!this.ready || !this.child || this.child.stdin.destroyed || this.child.stdin.writableEnded) return Promise.resolve(false);
+    const id = ++this.wisprSequence;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.wisprRequests.delete(id);
+        reject(new Error('Wispr command acknowledgement timed out.'));
+      }, 1500);
+      this.wisprRequests.set(id, { resolve, reject, timer });
+      this.send(`wispr-${action}`, id);
+    });
+  }
   setEnabled(enabled) {
     this.enabled = enabled;
     if (enabled) this.start();
@@ -20,6 +42,7 @@ export class FlowHold {
       if (this.child !== child) return;
       clearInterval(this.watchdog); this.watchdog = undefined;
       this.child = undefined; this.ready = false;
+      this.failWisprRequests();
       child.kill();
       this.onEvent({ type: 'unavailable' });
       if (this.enabled) {
@@ -39,6 +62,16 @@ export class FlowHold {
         let event; try { event = JSON.parse(line); } catch { continue; }
         lastSeen = Date.now();
         if (event.type === 'alive') continue;
+        if (typeof event.type === 'string' && event.type.startsWith('wispr-')) {
+          const request = this.wisprRequests.get(event.id);
+          if (request) {
+            clearTimeout(request.timer); this.wisprRequests.delete(event.id);
+            if (event.type === 'wispr-accepted') request.resolve(true);
+            else if (event.type === 'wispr-unavailable') request.resolve(false);
+            else request.reject(new Error('Wispr did not acknowledge the command.'));
+          }
+          continue;
+        }
         if (event.type === 'unavailable') { ended(); return; }
         if (event.type === 'ready') this.ready = true;
         this.onEvent(event);
@@ -59,6 +92,7 @@ export class FlowHold {
     clearTimeout(this.retryTimer); clearInterval(this.watchdog);
     const child = this.child;
     this.child = undefined; this.ready = false;
+    this.failWisprRequests();
     if (!child) return;
     if (!child.stdin.destroyed && !child.stdin.writableEnded) child.stdin.end('quit:0\n');
     const timeout = setTimeout(() => child.kill(), 1500);

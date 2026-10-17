@@ -17,7 +17,7 @@ let panel, orb, overlay, tray, chatgpt, activeRequest, pointerTimer, quitting = 
 let pointer, history = [], lastDisplay, accountBusy = false;
 let flowTimer, flowFocusTimer, flowFocusDeadline, flowLostFocusAt = 0, flowWasOnTop = false;
 const flowUnavailableMessage = 'Reconnecting the M4 talk key… Your draft is safe.';
-const wispr = new WisprFlow(url => shell.openExternal(url));
+const wispr = new WisprFlow(url => shell.openExternal(url), action => flowHold.wisprCommand(action));
 let state = {
   session: { status: 'disconnected', sharing: false }, models: [],
   settings: { model: '', displayId: '', speak: true, speechProvider: 'windows', inputProvider: 'windows', holdToTalk: true }, displays: [],
@@ -127,7 +127,7 @@ function maintainFlowFocus() {
   requestFlowFocus();
 }
 function startFlowHold(id) {
-  if (state.settings.inputProvider !== 'wispr' || !state.settings.holdToTalk) { flowHold.send('cancel', id); return; }
+  if (quitting || state.settings.inputProvider !== 'wispr' || !state.settings.holdToTalk) { flowHold.send('cancel', id); return; }
   if (accountBusy) throw new Error('Finish or cancel the ChatGPT connection first, then press M4.');
   if (!state.session.sharing) { showPanel(); throw new Error('Connect your ChatGPT account first.'); }
   if (!flowHold.ready) { flowHold.start(); throw new Error('The voice shortcut is getting ready. Try holding M4 again in a moment.'); }
@@ -418,6 +418,6 @@ app.on('window-all-closed',()=>{});
 app.on('before-quit',event=>{
   if (quitting) return;
   event.preventDefault(); quitting=true;
-  stop(); flowHold.close(); chatgpt?.cancelSignIn(); globalShortcut.unregisterAll(); tray?.destroy();
-  Promise.race([wispr.queue,new Promise(resolve=>setTimeout(resolve,3000))]).finally(()=>app.quit());
+  stop(); flowHold.send('enable',0); chatgpt?.cancelSignIn(); globalShortcut.unregisterAll(); tray?.destroy();
+  Promise.race([wispr.queue,new Promise(resolve=>setTimeout(resolve,3000))]).finally(()=>{flowHold.close();app.quit();});
 });
