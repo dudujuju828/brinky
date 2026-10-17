@@ -17,6 +17,7 @@
         <p class="question" id="question"></p>
         <div class="answer-card"><div class="answer-top"><span class="step-icon">↗</span><span id="answerMeta">BRINKY SAYS</span></div><h2 id="answerTitle"></h2><p id="answerText"></p></div>
         <div class="lesson-actions"><button class="primary" id="next">Done, what’s next? <span>→</span></button><button class="secondary" id="repeat" title="Repeat instruction">↺ Repeat</button></div>
+        <button class="text-button visual-followup" id="showExample" hidden>Show me an example on my screen ↗</button>
       </div>
       <div class="working" id="working" hidden><span class="spinner"></span><div><strong id="workingTitle">Looking at your screen…</strong><p id="workingDetail">Finding the next step for you.</p></div></div>
       <div class="composer-wrap">
@@ -25,6 +26,7 @@
         <p class="shortcut" id="shortcut">or press <kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>B</kbd> anywhere</p>
         <p class="subtle" id="dictationHint" hidden>Hold M4, speak, then release to send.</p>
       </div>
+      <label class="learning-toggle"><input type="checkbox" id="extendedAnswers" aria-describedby="extendedAnswerHint"><span><strong>Extended answers</strong><small id="extendedAnswerHint">Learn the concepts, with explanations, examples and visual guidance.</small></span></label>
       <div class="guide-options"><label><span class="screen-icon">▣</span><select id="display" aria-label="Screen to share"></select></label><label class="speak-toggle"><input type="checkbox" id="speak" checked> Speak answers</label></div>
       <p class="privacy-note" id="privacyNote">When you ask, a screenshot of this screen is sent to ChatGPT. Your microphone stays off until you speak.</p>
       <button id="demo" class="demo-button">Try the glowing pointer <span>↗</span></button>

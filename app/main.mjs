@@ -3,7 +3,7 @@ import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createChatGPT, ChatGPTError, CHATGPT_USAGE_URL } from './chatgpt-runtime.mjs';
-import { guidanceSchema, instructions, makeInput, parseGuidance, targetToRect } from './guidance.mjs';
+import { guidanceSchema, guidanceInstructions, makeInput, parseGuidance, targetToRect } from './guidance.mjs';
 import { Voice } from './voice.mjs';
 import { FlowHold } from './flow-hold.mjs';
 import { WisprFlow } from './wispr-flow.mjs';
@@ -20,7 +20,7 @@ const flowUnavailableMessage = 'Reconnecting the M4 talk key… Your draft is sa
 const wispr = new WisprFlow(url => shell.openExternal(url), action => flowHold.wisprCommand(action));
 let state = {
   session: { status: 'disconnected', sharing: false }, models: [],
-  settings: { model: '', displayId: '', speak: true, speechProvider: 'windows', inputProvider: 'windows', holdToTalk: true }, displays: [],
+  settings: { model: '', displayId: '', speak: true, extendedAnswers: false, speechProvider: 'windows', inputProvider: 'windows', holdToTalk: true }, displays: [],
   phase: 'idle', transcript: '', answer: null, question: '', error: '',
   shortcut: 'Ctrl + Alt + B', captureTime: null, demo: false,
   flow: null, holdShortcut: false,
@@ -220,7 +220,7 @@ async function capture(display, signal) {
     return `data:image/jpeg;base64,${source.thumbnail.toJPEG(85).toString('base64')}`;
   } finally { visible.forEach(w => { if (!w.isDestroyed()) w.showInactive(); }); }
 }
-async function showPointer(target, display, demo = false) {
+async function showPointer(target, display, demo = false, extendedAnswers = false) {
   clearPointer();
   if (!target || !overlay || overlay.isDestroyed()) return;
   const current = screen.getAllDisplays().find(d => d.id === display.id);
@@ -229,7 +229,7 @@ async function showPointer(target, display, demo = false) {
   pointer = { ...targetToRect(target, display.bounds), demo };
   overlay.webContents.send('brinky:pointer', pointer);
   overlay.showInactive();
-  pointerTimer = setTimeout(clearPointer, 18000);
+  pointerTimer = setTimeout(clearPointer, extendedAnswers ? 60000 : 18000);
 }
 async function ask(rawQuestion) {
   if (activeRequest || accountBusy) throw new Error('Wait for this step, or press Stop first.');
@@ -238,6 +238,7 @@ async function ask(rawQuestion) {
   if (!state.session.sharing) { showPanel(); throw new Error('Connect ChatGPT and enable plan usage in the Connection tab first.'); }
   if (!state.models.some(m => m.slug === state.settings.model)) throw new Error('Load and choose a model in Connection first.');
   const display = getDisplay();
+  const extendedAnswers = state.settings.extendedAnswers;
   endFlow();
   voice.cancel(); clearPointer();
   const controller = new AbortController(); activeRequest = controller;
@@ -245,17 +246,17 @@ async function ask(rawQuestion) {
   try {
     const screenshot = testMode ? 'data:image/jpeg;base64,/9j/2Q==' : await capture(display, controller.signal);
     state.captureTime = Date.now(); publish();
-    const result = await chatgpt.streamResponse({ model: state.settings.model, instructions,
+    const result = await chatgpt.streamResponse({ model: state.settings.model, instructions: guidanceInstructions(extendedAnswers),
       input: makeInput(history, question, screenshot),
       textFormat: { type: 'json_schema', name: 'brinky_step', strict: true, schema: guidanceSchema },
       signal: controller.signal,
     });
     controller.signal.throwIfAborted();
-    const answer = parseGuidance(result.text);
+    const answer = parseGuidance(result.text, { extendedAnswers });
     history = [...history, { role: 'user', content: question }, { role: 'assistant', content: JSON.stringify(answer) }].slice(-10);
-    state.answer = answer; state.phase = 'ready'; lastDisplay = display;
-    await showPointer(answer.target, display);
-    if (state.settings.speak && !testMode) voice.speak(answer.instruction);
+    state.answer = { ...answer, extendedAnswers }; state.phase = 'ready'; lastDisplay = display;
+    await showPointer(answer.target, display, false, extendedAnswers);
+    if (state.settings.speak && !testMode) voice.speak(answer.instruction, { extendedAnswers });
     publish();
   } catch (error) {
     if (!controller.signal.aborted) { state.phase = 'idle'; reportError(error); }
@@ -331,6 +332,10 @@ function installIPC() {
           if (payload.model !== undefined) { if (!state.models.some(m => m.slug === payload.model)) throw new Error('Choose an available model.'); state.settings.model = payload.model; }
           if (payload.displayId !== undefined) { if (!state.displays.some(d => d.id === payload.displayId)) throw new Error('Choose an available screen.'); state.settings.displayId = payload.displayId; clearPointer(); }
           if (typeof payload.speak === 'boolean') { state.settings.speak = payload.speak; if (!payload.speak) voice.stopSpeaking(); }
+          if (payload.extendedAnswers !== undefined) {
+            if (typeof payload.extendedAnswers !== 'boolean') throw new Error('Choose whether to enable extended answers.');
+            state.settings.extendedAnswers = payload.extendedAnswers;
+          }
           if (payload.speechProvider !== undefined) {
             if (!['windows', 'elevenlabs'].includes(payload.speechProvider)) throw new Error('Choose an available reply voice.');
             voice.stopSpeaking(); state.settings.speechProvider = payload.speechProvider;
@@ -367,7 +372,7 @@ function installIPC() {
         }
         case 'flow-cancel': if (state.flow?.id === payload?.id) endFlow(); break;
         case 'stop': stop(); break;
-        case 'repeat': if (state.answer) { if (state.settings.speak && !testMode) voice.speak(state.answer.instruction); if (state.demo || (state.captureTime && Date.now()-state.captureTime < 30000)) await showPointer(state.answer.target,lastDisplay,state.demo); } break;
+        case 'repeat': if (state.answer) { if (state.settings.speak && !testMode) voice.speak(state.answer.instruction, { extendedAnswers: state.answer.extendedAnswers }); if (state.demo || (state.captureTime && Date.now()-state.captureTime < 30000)) await showPointer(state.answer.target,lastDisplay,state.demo,state.answer.extendedAnswers); } break;
         case 'demo': if (accountBusy || activeRequest) throw new Error('Stop the current request first.'); await demo(); break;
         case 'clear': stop(); history=[]; state.answer=null; state.question=''; state.error=''; state.demo=false; state.captureTime=null; break;
         default: throw new Error('Unknown Brinky action.');
@@ -395,7 +400,7 @@ else {
   app.on('second-instance', showPanel);
   app.whenReady().then(async()=>{
     await mkdir(dataDir,{recursive:true});
-    try { const saved=JSON.parse(await readFile(join(dataDir,'preferences.json'),'utf8')); for(const key of ['model','displayId']) if(typeof saved[key]==='string') state.settings[key]=saved[key]; if(typeof saved.speak==='boolean') state.settings.speak=saved.speak; if(['windows','elevenlabs'].includes(saved.speechProvider)) state.settings.speechProvider=saved.speechProvider; if(['windows','wispr'].includes(saved.inputProvider)) state.settings.inputProvider=saved.inputProvider; if(typeof saved.holdToTalk==='boolean') state.settings.holdToTalk=saved.holdToTalk; } catch {}
+    try { const saved=JSON.parse(await readFile(join(dataDir,'preferences.json'),'utf8')); for(const key of ['model','displayId']) if(typeof saved[key]==='string') state.settings[key]=saved[key]; for(const key of ['speak','extendedAnswers']) if(typeof saved[key]==='boolean') state.settings[key]=saved[key]; if(['windows','elevenlabs'].includes(saved.speechProvider)) state.settings.speechProvider=saved.speechProvider; if(['windows','wispr'].includes(saved.inputProvider)) state.settings.inputProvider=saved.inputProvider; if(typeof saved.holdToTalk==='boolean') state.settings.holdToTalk=saved.holdToTalk; } catch {}
     chatgpt = testMode ? fakeClient() : createChatGPT({
       appName:'Brinky', appId:'brinky', redirectPort:0, sendHostId:true,
       storageDir:join(dataDir,'chatgpt'),

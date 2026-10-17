@@ -25,6 +25,12 @@ npm start
 
 **Try the glowing pointer** previews the marker without signing in or sharing a screenshot. The minus button keeps a small companion visible; × quits. The tray menu reopens Brinky.
 
+## Extended answers
+
+Check **Extended answers** on the Guide tab to learn the concepts behind a task. Brinky explains what something means, why it works, and when to use it, with examples and visual pointers tied to your screen. It can answer conceptual questions without requiring a click, or offer one practical step to try. The checkbox is off by default, and its choice is saved between launches. Unchecked, Brinky keeps its original brief, one-step guidance.
+
+Teaching replies usually use 150–350 words and can be read aloud in full with either reply voice. Their pointer stays visible for up to a minute. **Show me an example on my screen** takes a fresh screenshot and asks for a relevant visual example; **Ask a follow-up** keeps the lesson context. Longer spoken replies use more of your chosen voice provider's allowance.
+
 ## Hold to talk with Wispr Flow
 
 1. Install and sign in to the Wispr Flow desktop app, then leave it running.
@@ -85,7 +91,7 @@ The app uses Electron, a plain HTML/CSS/JavaScript interface, and PowerShell hel
 
 ## Limitations
 
-- Model pointing can be wrong, especially for small icons. Invalid boxes are discarded; the marker fades after 18 seconds. Each next step captures fresh context.
+- Model pointing can be wrong, especially for small icons. Invalid boxes are discarded; the marker fades after 18 seconds, or 60 seconds for extended answers. Each next step captures fresh context.
 - Capture covers a display, not an individual app window. Multi-monitor scaling combinations need further field testing.
 - Voice recognition depends on the microphone and chosen provider. Typing is always available.
 - This is a prototype. The Flow handoff and ElevenLabs integration have not been covered by the included mock tests.

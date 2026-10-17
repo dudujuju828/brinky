@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { answerCharacterLimit } from './guidance.mjs';
 const helper = fileURLToPath(new URL('../native/speech.ps1', import.meta.url)).replace('app.asar', 'app.asar.unpacked');
 const shell = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
 
@@ -46,10 +47,11 @@ export class Voice {
   }
   finish() { this.listener?.stdin.write('stop\n'); }
   cancel() { const old = this.listener; this.listener = undefined; old?.kill(); this.stopSpeaking(); }
-  speak(text) {
+  speak(text, { extendedAnswers = false } = {}) {
     this.stopSpeaking();
+    text = text.slice(0, answerCharacterLimit(extendedAnswers));
     if (this.options.getProvider?.() === 'elevenlabs') {
-      void this.speakElevenLabs(text.slice(0, 1800));
+      void this.speakElevenLabs(text);
       return;
     }
     this.speakWindows(text);
@@ -57,7 +59,7 @@ export class Voice {
   speakWindows(text) {
     const child = launch('speak', () => {});
     this.speaker = child;
-    child.stdin.end(JSON.stringify({ text: text.slice(0, 1800) }) + '\n');
+    child.stdin.end(JSON.stringify({ text }) + '\n');
     child.on('exit', () => { if (this.speaker === child) this.speaker = undefined; });
   }
   async speakElevenLabs(text) {
@@ -73,12 +75,12 @@ export class Voice {
           method: 'POST', redirect: 'error',
           headers: { 'xi-api-key': key, 'Content-Type': 'application/json', Accept: 'audio/pcm' },
           body: JSON.stringify({ text, model_id: 'eleven_flash_v2_5', voice_settings: { stability: 0.5, similarity_boost: 0.75, style: 0, use_speaker_boost: true, speed: 1.0 } }),
-          signal: AbortSignal.any([controller.signal, AbortSignal.timeout(45000)]),
+          signal: AbortSignal.any([controller.signal, AbortSignal.timeout(text.length > 1800 ? 90000 : 45000)]),
         });
         if (!response.ok) { await response.body?.cancel(); throw new Error('Voice service unavailable.'); }
         const pcm = Buffer.from(await response.arrayBuffer());
         controller.signal.throwIfAborted();
-        if (!pcm.length || pcm.length % 2 || pcm.length > 12 * 1024 * 1024) throw new Error('Unexpected audio response.');
+        if (!pcm.length || pcm.length % 2 || pcm.length > (text.length > 1800 ? 24 : 12) * 1024 * 1024) throw new Error('Unexpected audio response.');
         // ElevenLabs PCM is mono, signed 16-bit little endian. SoundPlayer accepts a WAV container.
         const header = Buffer.alloc(44);
         header.write('RIFF', 0); header.writeUInt32LE(36 + pcm.length, 4); header.write('WAVEfmt ', 8);
@@ -90,7 +92,7 @@ export class Voice {
           const oldest = this.audioCache.keys().next().value;
           this.cacheBytes -= this.audioCache.get(oldest).length; this.audioCache.delete(oldest);
         }
-        this.audioCache.set(text, audio); this.cacheBytes += audio.length;
+        if (audio.length <= 24 * 1024 * 1024) { this.audioCache.set(text, audio); this.cacheBytes += audio.length; }
       }
       if (this.request !== controller || controller.signal.aborted) return;
       let failed = false;

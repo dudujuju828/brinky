@@ -87,6 +87,7 @@ function render(state) {
   const connected=state.session.status==='connected';
   const sharing=state.session.sharing;
   const wispr=state.settings.inputProvider==='wispr';
+  const extendedAnswers=Boolean(state.settings.extendedAnswers);
   const thinking=state.phase==='thinking', listening=['starting-mic','listening'].includes(state.phase), holding=Boolean(state.flow), busy=thinking||listening||holding;
   $('status').classList.toggle('connected',sharing);
   $('status').replaceChildren(Object.assign(document.createElement('b'),{}),document.createTextNode(thinking?'Thinking with you':listening?'Listening':sharing?'Here to help':'Ready to meet you'));
@@ -96,20 +97,24 @@ function render(state) {
   $('lesson').hidden=!state.answer||busy;
   if(state.answer) {
     $('answerTitle').textContent=state.answer.title; $('answerText').textContent=state.answer.instruction;
-    $('lessonTag').textContent=state.demo?'POINTER PREVIEW':state.answer.done?'NICELY DONE':'ONE STEP AT A TIME';
+    $('lessonTag').textContent=state.demo?'POINTER PREVIEW':state.answer.extendedAnswers?'LEARN THE WHY':state.answer.done?'NICELY DONE':'ONE STEP AT A TIME';
+    document.querySelector('.answer-card').classList.toggle('teaching',Boolean(state.answer.extendedAnswers));
     $('answerMeta').textContent=state.demo?'DEMO · NO SCREEN SHARED':'BRINKY SAYS';
     $('question').textContent=state.question; $('question').hidden=!state.question;
     $('next').disabled=state.demo||!sharing||busy;
-    $('next').textContent=state.answer.done?'Ask something new':'Done, what’s next? →';
+    $('next').textContent=state.answer.done?(extendedAnswers?'Ask a follow-up':'Ask something new'):'Done, what’s next? →';
   }
+  $('showExample').hidden=!extendedAnswers||!state.answer||state.demo;
+  $('showExample').disabled=busy||!sharing;
   $('working').hidden=!busy;
   $('workingTitle').textContent=thinking?'Looking at your screen…':holding?(state.flow.phase==='recording'?'Ready for your words…':['stopping','transcribing'].includes(state.flow.phase)?'Finishing your words…':state.flow.phase==='starting'?'Starting Wispr Flow…':'Bringing Brinky to you…'):state.phase==='starting-mic'?'Getting your microphone ready…':'I’m listening.';
   document.querySelector('.composer').classList.toggle('dictating',holding&&['recording','stopping','transcribing'].includes(state.flow.phase));
-  $('workingDetail').textContent=thinking?'Finding one clear next step. Keep your app in place.':holding?(['stopping','transcribing'].includes(state.flow.phase)?'Your question will send as soon as Flow inserts it.':'Keep M4 held. Speak after Flow’s recording cue, then release to send. Esc cancels.'):state.transcript||'Speak naturally. I’ll send after a pause.';
+  $('workingDetail').textContent=thinking?(extendedAnswers?'Building an explanation with a useful example.':'Finding one clear next step. Keep your app in place.'):holding?(['stopping','transcribing'].includes(state.flow.phase)?'Your question will send as soon as Flow inserts it.':'Keep M4 held. Speak after Flow’s recording cue, then release to send. Esc cancels.'):state.transcript||'Speak naturally. I’ll send after a pause.';
   $('mic').classList.toggle('listening',listening); $('micText').textContent=listening?'Finish speaking':wispr?'Dictate with Wispr Flow':'Speak to Brinky';
   $('mic').title=wispr?'Focus the question box, then use your Wispr Flow shortcut':'Speak to Brinky';
   $('mic').disabled=thinking||holding; $('send').disabled=busy; $('demo').disabled=busy; $('newLesson').disabled=busy;
   $('display').disabled=busy; $('model').disabled=busy; $('speak').checked=state.settings.speak;
+  $('extendedAnswers').checked=extendedAnswers; $('extendedAnswers').disabled=busy;
   $('replyVoice').value=state.settings.speechProvider||'windows'; $('replyVoice').disabled=busy;
   $('voiceDescription').textContent=state.settings.speechProvider==='elevenlabs'?'George · Flash v2.5. Reply text is sent to ElevenLabs and uses your ElevenLabs credits. Recent repeats reuse the same audio.':'The original Windows voice. Free and runs on your PC.';
   $('voiceInput').value=state.settings.inputProvider||'windows'; $('voiceInput').disabled=busy;
@@ -140,6 +145,7 @@ $('connect').onclick=async()=>{const r=await call('connect');if(r?.ok&&current?.
 $('cancelLogin').onclick=()=>call('cancel-login'); $('disconnect').onclick=()=>call('disconnect'); $('usage').onclick=()=>call('usage');
 $('refreshModels').onclick=()=>call('models');
 $('model').onchange=e=>call('settings',{model:e.target.value}); $('display').onchange=e=>call('settings',{displayId:e.target.value}); $('speak').onchange=e=>call('settings',{speak:e.target.checked});
+$('extendedAnswers').onchange=e=>call('settings',{extendedAnswers:e.target.checked});
 $('replyVoice').onchange=e=>call('settings',{speechProvider:e.target.value});
 $('voiceInput').onchange=e=>call('settings',{inputProvider:e.target.value});
 $('holdToTalk').onchange=e=>call('settings',{holdToTalk:e.target.checked});
@@ -148,7 +154,8 @@ $('prompt').addEventListener('input',()=>{noteFlowValue();scheduleFlowSend();});
 $('send').onclick=send; $('prompt').onkeydown=e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();send();}};
 $('mic').onclick=()=>{if(!current?.session.sharing){tab('connection');return;}call('voice');};
 $('stop').onclick=()=>call('stop'); $('demo').onclick=()=>call('demo'); $('repeat').onclick=()=>call('repeat');
-$('next').onclick=()=>{if(current?.answer?.done){call('clear');$('prompt').focus();}else call('ask','I have done that. What is the next step?');};
+$('next').onclick=()=>{if(current?.answer?.done){if(!current.settings.extendedAnswers)call('clear');$('prompt').focus();}else call('ask','I have done that. What is the next step?');};
+$('showExample').onclick=()=>call('ask','Show me a useful example of the concept you just explained on my current screen. Highlight a relevant visible control, object, or region, and explain what I should notice. If it is not visible, guide me through one next step to reveal it.');
 $('newLesson').onclick=()=>call('clear'); $('minimize').onclick=()=>call('hide'); $('close').onclick=()=>call('quit');
 document.addEventListener('keydown',e=>{if(e.key==='Escape')call('stop');});
 window.brinky.onCompose(()=>{tab('guide');focusComposer();pollFlowComposer();});
