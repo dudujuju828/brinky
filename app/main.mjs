@@ -1,4 +1,4 @@
-import { app, BrowserWindow, desktopCapturer, globalShortcut, ipcMain, Menu, nativeImage, safeStorage, screen, shell, Tray } from 'electron';
+import { app, BrowserWindow, desktopCapturer, globalShortcut, ipcMain, Menu, nativeImage, powerMonitor, safeStorage, screen, shell, Tray } from 'electron';
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -14,7 +14,8 @@ app.setPath('userData', process.env.BRINKY_DATA_DIR || join(app.getPath('appData
 const dataDir = app.getPath('userData');
 let panel, orb, overlay, tray, chatgpt, activeRequest, pointerTimer, quitting = false;
 let pointer, history = [], lastDisplay, accountBusy = false;
-let flowTimer;
+let flowTimer, flowFocusTimer, flowFocusDeadline, flowLostFocusAt = 0, flowWasOnTop = false;
+const flowUnavailableMessage = 'Reconnecting the M4 talk key… Your draft is safe.';
 let state = {
   session: { status: 'disconnected', sharing: false }, models: [],
   settings: { model: '', displayId: '', speak: true, speechProvider: 'windows', inputProvider: 'windows', holdToTalk: true }, displays: [],
@@ -44,6 +45,9 @@ const voice = new Voice(event => {
 const flowHold = new FlowHold(event => {
   if (event.type === 'ready') {
     state.holdShortcut = state.settings.inputProvider === 'wispr' && state.settings.holdToTalk;
+    const handle = panel.getNativeWindowHandle();
+    flowHold.send('target', handle.length === 8 ? handle.readBigUInt64LE().toString() : handle.readUInt32LE());
+    if (state.error === flowUnavailableMessage) state.error = '';
     flowHold.send('enable', state.holdShortcut ? 1 : 0); publish(); return;
   }
   if (event.type === 'pressed') {
@@ -52,7 +56,7 @@ const flowHold = new FlowHold(event => {
   }
   if (event.type === 'unavailable') {
     state.holdShortcut = false;
-    if (state.flow) { endFlow(); state.error = 'The hold-to-talk helper stopped. Use Ctrl + Space in the question box, then press Enter.'; }
+    endFlow(); state.error = flowUnavailableMessage;
     publish();
     return;
   }
@@ -69,26 +73,57 @@ const flowHold = new FlowHold(event => {
 });
 
 function endFlow(cancel = true) {
-  const previous = state.flow; state.flow = null; clearTimeout(flowTimer);
+  const previous = state.flow; state.flow = null; clearTimeout(flowTimer); clearInterval(flowFocusTimer);
+  flowLostFocusAt = 0;
+  if (previous && panel && !panel.isDestroyed()) panel.setAlwaysOnTop(flowWasOnTop);
   if (previous) flowHold.send(cancel ? 'cancel' : 'complete', previous.id);
 }
+function requestFlowFocus() {
+  if (!state.flow || !panel || panel.isDestroyed()) return;
+  showPanel(); panel.moveTop(); panel.webContents.focus();
+  panel.webContents.send('brinky:compose');
+  flowHold.send('focus', state.flow.id);
+}
+function maintainFlowFocus() {
+  if (!state.flow) return;
+  const now = Date.now();
+  if (state.flow.phase === 'arming' && now > flowFocusDeadline) {
+    endFlow(); state.error = 'Windows did not give Brinky keyboard focus. Your draft is safe; press M4 again or click the question box.';
+    panel.flashFrame(true); publish(); return;
+  }
+  if (panel.isFocused() && panel.webContents.isFocused()) { flowLostFocusAt = 0; return; }
+  if (!flowLostFocusAt) flowLostFocusAt = now;
+  // Let transient activation changes settle. Explicit clicks away, Alt+Tab,
+  // Escape and hiding the panel cancel separately, so recovery does not fight them.
+  if (state.flow.phase !== 'arming' && now - flowLostFocusAt < 350) return;
+  if (now - flowLostFocusAt > 5000) {
+    endFlow(); state.error = 'Brinky could not recover keyboard focus. Your words remain in the question box.'; publish(); return;
+  }
+  requestFlowFocus();
+}
 function startFlowHold(id) {
-  if (state.settings.inputProvider !== 'wispr' || !state.settings.holdToTalk || state.flow || accountBusy) { flowHold.send('cancel', id); return; }
+  if (state.settings.inputProvider !== 'wispr' || !state.settings.holdToTalk) { flowHold.send('cancel', id); return; }
+  if (accountBusy) throw new Error('Finish or cancel the ChatGPT connection first, then press M4.');
   if (!state.session.sharing) { showPanel(); throw new Error('Connect your ChatGPT account first.'); }
   if (!flowHold.ready) { flowHold.start(); throw new Error('The voice shortcut is getting ready. Try holding M4 again in a moment.'); }
+  endFlow();
   activeRequest?.abort(); activeRequest = undefined;
   voice.cancel(); clearPointer(); state.error = ''; state.phase = 'idle';
+  flowWasOnTop = panel.isAlwaysOnTop(); panel.setAlwaysOnTop(true); panel.flashFrame(false);
   state.flow = { id, phase: 'arming' };
-  flowTimer = setTimeout(() => { endFlow(); publish(); }, 150000);
-  showPanel(); publish();
+  flowFocusDeadline = Date.now() + 5000;
+  flowTimer = setTimeout(() => { endFlow(); state.error = 'The talk-key session ended. Your draft is safe; hold M4 to continue.'; publish(); }, 150000);
+  publish(); requestFlowFocus();
+  flowFocusTimer = setInterval(maintainFlowFocus, 150);
 }
 function configureFlowHold() {
   endFlow(); globalShortcut.unregister('F8'); state.holdShortcut = false;
-  if (state.settings.inputProvider === 'wispr' && state.settings.holdToTalk) {
-    flowHold.start();
+  const enabled = state.settings.inputProvider === 'wispr' && state.settings.holdToTalk;
+  flowHold.setEnabled(enabled);
+  if (enabled) {
     state.holdShortcut = flowHold.ready;
     if (flowHold.ready) flowHold.send('enable', 1);
-  } else flowHold.send('enable', 0);
+  }
 }
 
 function publish() {
@@ -98,7 +133,11 @@ function reportError(error) {
   state.error = error instanceof ChatGPTError ? error.message : error instanceof Error ? error.message : 'Something went wrong. Please try again.';
   publish();
 }
-function showPanel() { panel?.show(); panel?.focus(); }
+function showPanel() {
+  if (!panel || panel.isDestroyed()) return;
+  if (panel.isMinimized()) panel.restore();
+  panel.show(); panel.focus();
+}
 function clearPointer() {
   clearTimeout(pointerTimer); pointer = undefined;
   if (overlay && !overlay.isDestroyed()) overlay.hide();
@@ -207,7 +246,7 @@ async function demo() {
   await showPointer(state.answer.target, lastDisplay, true);
 }
 function secureWindow(options) {
-  const window = new BrowserWindow({ ...options, webPreferences: { preload: join(root,'app/preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, devTools: testMode } });
+  const window = new BrowserWindow({ ...options, webPreferences: { preload: join(root,'app/preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, devTools: testMode, backgroundThrottling: false } });
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   window.webContents.on('will-navigate', e => e.preventDefault());
   window.webContents.session.setPermissionRequestHandler((_wc,_permission,callback) => callback(false));
@@ -218,7 +257,9 @@ async function createWindows() {
   const area = screen.getPrimaryDisplay().workArea;
   panel = secureWindow({ width: 460, height: Math.min(820,area.height-40), minWidth: 420, minHeight: 640, x: area.x+area.width-480, y: area.y+20, frame: false, show: false, title: 'Brinky', backgroundColor: '#f8f7f2' });
   panel.on('close', event => { if (!quitting) { event.preventDefault(); panel.hide(); } });
-  panel.on('blur', () => { if (state.flow) { endFlow(); publish(); } });
+  panel.on('focus', () => { if (state.flow) panel.webContents.send('brinky:compose'); });
+  const cancelHiddenFlow = () => { if (state.flow) { endFlow(); publish(); } };
+  panel.on('hide', cancelHiddenFlow); panel.on('minimize', cancelHiddenFlow);
   orb = secureWindow({ width: 230, height: 70, x: area.x+area.width-250, y: area.y+area.height-90, frame: false, transparent: true, resizable: false, alwaysOnTop: true, skipTaskbar: true, show: false, title: 'Brinky companion' });
   overlay = secureWindow({ ...screen.getPrimaryDisplay().bounds, frame: false, transparent: true, resizable: false, movable: false, focusable: false, alwaysOnTop: true, skipTaskbar: true, show: false, title: 'Brinky pointer', hasShadow: false });
   overlay.setAlwaysOnTop(true, 'screen-saver'); overlay.setIgnoreMouseEvents(true);
@@ -271,11 +312,12 @@ function installIPC() {
         case 'voice': toggleVoice(); break;
         case 'flow-ready': {
           if (event.sender !== panel.webContents || !state.flow || state.flow.id !== payload?.id || state.flow.phase !== 'arming') break;
-          if (!payload.empty || !payload.focused) { endFlow(); state.error = 'Send or clear the question box first, then hold M4.'; break; }
+          if (!payload.focused || !panel.isFocused() || !panel.webContents.isFocused()) return { ok: false };
           state.flow.phase = 'starting'; flowHold.send('begin', state.flow.id); break;
         }
         case 'flow-submit': {
           if (event.sender !== panel.webContents || !state.flow || state.flow.id !== payload?.id || state.flow.phase !== 'transcribing') return { ok: false };
+          if (!panel.isFocused() || !panel.webContents.isFocused()) return { ok: false };
           if (typeof payload.text !== 'string' || !payload.text.trim() || payload.text.length > 4000) { endFlow(); throw new Error('Ask a question under 4,000 characters.'); }
           endFlow(false); await ask(payload.text); break;
         }
@@ -322,6 +364,8 @@ else {
     if (!globalShortcut.register('CommandOrControl+Alt+B',()=>{try{toggleVoice();}catch(e){reportError(e);}})) {state.shortcut='Shortcut unavailable'; state.error='Ctrl + Alt + B is in use. You can use the microphone button.';}
     globalShortcut.register('CommandOrControl+Alt+Escape',stop);
     configureFlowHold();
+    powerMonitor.on('lock-screen', () => { endFlow(); flowHold.send('reset', 0); publish(); });
+    powerMonitor.on('resume', () => { endFlow(); flowHold.send('reset', 0); publish(); });
     screen.on('display-added',updateDisplays); screen.on('display-removed',updateDisplays); screen.on('display-metrics-changed',updateDisplays);
     await refreshModels().catch(reportError); publish();
   }).catch(error=>{ console.error('Brinky startup failed:',error.message); app.quit(); });

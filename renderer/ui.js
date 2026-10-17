@@ -2,37 +2,60 @@ const $ = id => document.getElementById(id);
 let current, lastModels='', lastDisplays='';
 let flowDraft, flowSendTimer, flowValueTimer;
 function syncFlow(state) {
-  if (!state.flow) { clearTimeout(flowSendTimer); clearInterval(flowValueTimer); flowDraft=undefined; return; }
+  if (!state.flow) { clearTimeout(flowSendTimer); flowSendTimer=undefined; clearInterval(flowValueTimer); flowDraft=undefined; return; }
   if (flowDraft?.id !== state.flow.id) {
-    clearTimeout(flowSendTimer); clearInterval(flowValueTimer); flowDraft={id:state.flow.id,changed:false,submitted:false,lastValue:$('prompt').value};
-    const id=state.flow.id; tab('guide'); $('prompt').focus();
-    setTimeout(()=>{
-      if(flowDraft?.id!==id)return;
-      $('prompt').focus();
-      call('flow-ready',{id,empty:!$('prompt').value.trim(),focused:document.hasFocus()&&document.activeElement===$('prompt')});
-    },100);
-    // Some accessibility-based insertions update the field without a DOM input event.
-    flowValueTimer=setInterval(()=>{
-      if(flowDraft?.id!==id||flowDraft.submitted)return;
-      if($('prompt').value!==flowDraft.lastValue){flowDraft.lastValue=$('prompt').value;flowDraft.changed=true;scheduleFlowSend();}
-    },120);
+    clearTimeout(flowSendTimer); flowSendTimer=undefined; clearInterval(flowValueTimer);
+    flowDraft={id:state.flow.id,changed:false,submitted:false,readyPending:false,baseline:$('prompt').value,lastValue:$('prompt').value,lastChange:performance.now()};
+    tab('guide'); focusComposer();
+    // Keep an existing draft and append dictation; never select or erase it.
+    $('prompt').setSelectionRange($('prompt').value.length,$('prompt').value.length);
+    flowValueTimer=setInterval(pollFlowComposer,100);
   }
-  scheduleFlowSend();
+  pollFlowComposer();
+}
+function focusComposer() {
+  if(document.activeElement!==$('prompt'))$('prompt').focus({preventScroll:true});
+}
+function composerFocused() { return document.hasFocus()&&document.activeElement===$('prompt'); }
+function noteFlowValue() {
+  if(!flowDraft||flowDraft.submitted)return;
+  const value=$('prompt').value;
+  if(value===flowDraft.lastValue)return;
+  flowDraft.lastValue=value; flowDraft.lastChange=performance.now();
+  flowDraft.changed=value!==flowDraft.baseline;
+  clearTimeout(flowSendTimer); flowSendTimer=undefined;
+}
+function pollFlowComposer() {
+  if(!flowDraft||flowDraft.submitted||current?.flow?.id!==flowDraft.id)return;
+  if(document.hasFocus())focusComposer();
+  const focused=composerFocused();
+  if(current.flow.phase==='arming'&&focused&&!flowDraft.readyPending){
+    const draft=flowDraft; draft.readyPending=true;
+    call('flow-ready',{id:draft.id,focused:true}).finally(()=>{draft.readyPending=false;});
+  }
+  // Flow can change a textarea through accessibility without a DOM input event.
+  noteFlowValue(); scheduleFlowSend();
 }
 function scheduleFlowSend() {
-  clearTimeout(flowSendTimer);
-  if(!flowDraft?.changed||flowDraft.submitted||current?.flow?.phase!=='transcribing')return;
+  if(flowSendTimer||!flowDraft?.changed||flowDraft.submitted||current?.flow?.phase!=='transcribing'||!composerFocused())return;
   const id=flowDraft.id;
   flowSendTimer=setTimeout(async()=>{
+    flowSendTimer=undefined;
     if(flowDraft?.id!==id||flowDraft.submitted||current?.flow?.phase!=='transcribing')return;
-    if(!document.hasFocus()||document.activeElement!==$('prompt')){call('flow-cancel',{id});return;}
+    noteFlowValue();
+    if(performance.now()-flowDraft.lastChange<700){scheduleFlowSend();return;}
+    if(!composerFocused())return; // Wait for recovery; do not throw the draft away.
     const text=$('prompt').value.trim(); if(!text)return;
     flowDraft.submitted=true; $('prompt').value='';
     const result=await call('flow-submit',{id,text});
-    if(!result?.ok&&!$('prompt').value)$('prompt').value=text;
-  },500);
+    if(!result?.ok&&(!flowDraft||flowDraft.id===id)&&!$('prompt').value){
+      $('prompt').value=text;
+      if(flowDraft?.id===id){flowDraft.submitted=false;flowDraft.lastValue=text;flowDraft.lastChange=performance.now();}
+    }
+  },Math.max(30,700-(performance.now()-flowDraft.lastChange)));
 }
 function tab(which) {
+  if(which!=='guide'&&current?.flow)call('flow-cancel',{id:current.flow.id});
   $('guideView').hidden=which!=='guide'; $('connectionView').hidden=which!=='connection';
   $('guideTab').classList.toggle('active',which==='guide'); $('connectionTab').classList.toggle('active',which==='connection');
 }
@@ -63,7 +86,8 @@ function render(state) {
     $('next').textContent=state.answer.done?'Ask something new':'Done, what’s next? →';
   }
   $('working').hidden=!busy;
-  $('workingTitle').textContent=thinking?'Looking at your screen…':holding?(state.flow.phase==='recording'?'Listening with Wispr Flow…':state.flow.phase==='transcribing'?'Finishing your words…':'Starting Wispr Flow…'):state.phase==='starting-mic'?'Getting your microphone ready…':'I’m listening.';
+  $('workingTitle').textContent=thinking?'Looking at your screen…':holding?(state.flow.phase==='recording'?'Ready for your words…':state.flow.phase==='transcribing'?'Finishing your words…':'Bringing Brinky to you…'):state.phase==='starting-mic'?'Getting your microphone ready…':'I’m listening.';
+  document.querySelector('.composer').classList.toggle('dictating',holding&&state.flow.phase!=='arming');
   $('workingDetail').textContent=thinking?'Finding one clear next step. Keep your app in place.':holding?(state.flow.phase==='transcribing'?'Your question will send as soon as Flow inserts it.':'Keep M4 held while speaking. Release to send. Esc cancels.'):state.transcript||'Speak naturally. I’ll send after a pause.';
   $('mic').classList.toggle('listening',listening); $('micText').textContent=listening?'Finish speaking':wispr?'Dictate with Wispr Flow':'Speak to Brinky';
   $('mic').title=wispr?'Focus the question box, then use your Wispr Flow shortcut':'Speak to Brinky';
@@ -103,12 +127,13 @@ $('replyVoice').onchange=e=>call('settings',{speechProvider:e.target.value});
 $('voiceInput').onchange=e=>call('settings',{inputProvider:e.target.value});
 $('holdToTalk').onchange=e=>call('settings',{holdToTalk:e.target.checked});
 async function send() {if(current?.flow||current?.phase==='thinking')return;const text=$('prompt').value.trim();if(!text)return;if(!current?.session.sharing){tab('connection');return;} $('prompt').value='';await call('ask',text);}
-$('prompt').addEventListener('input',()=>{if(flowDraft){flowDraft.changed=true;scheduleFlowSend();}});
+$('prompt').addEventListener('input',()=>{noteFlowValue();scheduleFlowSend();});
 $('send').onclick=send; $('prompt').onkeydown=e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();send();}};
 $('mic').onclick=()=>{if(!current?.session.sharing){tab('connection');return;}call('voice');};
 $('stop').onclick=()=>call('stop'); $('demo').onclick=()=>call('demo'); $('repeat').onclick=()=>call('repeat');
 $('next').onclick=()=>{if(current?.answer?.done){call('clear');$('prompt').focus();}else call('ask','I have done that. What is the next step?');};
 $('newLesson').onclick=()=>call('clear'); $('minimize').onclick=()=>call('hide'); $('close').onclick=()=>call('quit');
 document.addEventListener('keydown',e=>{if(e.key==='Escape')call('stop');});
-window.brinky.onCompose(()=>{tab('guide');$('prompt').focus();});
+window.brinky.onCompose(()=>{tab('guide');focusComposer();pollFlowComposer();});
+window.addEventListener('focus',pollFlowComposer);
 window.brinky.onState(render); window.brinky.call('state').then(state=>{render(state);if(state.settings.inputProvider==='wispr')$('prompt').focus();});

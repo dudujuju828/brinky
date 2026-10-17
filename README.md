@@ -34,7 +34,11 @@ npm start
 
 The current UI calls this shortcut **M4**, after the original setup’s keyboard macro key. Any keyboard can use Ctrl + Shift + F8 directly. A programmable keyboard can map a key to that chord, keeping it held until the physical key is released. No keyboard firmware is included.
 
-Send or clear an existing draft first. **Esc**, **Stop**, or leaving Brinky cancels automatic sending. If Flow inserts no text, Brinky times out without sending. Regular typing and pasting still require Enter.
+M4 focuses the end of an existing draft so you can continue it. Brinky only submits after new text arrives; pressing the key alone never sends an unchanged draft. A fresh M4 press replaces a stuck talk-key session. The chat box gains a green outline after Brinky confirms focus.
+
+Brinky restores hidden or minimized windows, retries focus for up to five seconds, and tolerates brief activation changes while Flow starts. A deliberate click into another app, Alt+Tab, **Esc**, **Stop**, or hiding Brinky cancels automatic sending. If focus cannot be recovered or Flow inserts no text, your draft remains available and Brinky shows a message. Regular typing and pasting outside a talk-key session still require Enter.
+
+The Windows helper uses background Raw Input, so it does not depend on a low-level keyboard hook staying installed. A heartbeat detects an unresponsive helper and restarts it automatically. It observes only the relevant shortcut keys and mouse-button cancellation events; it does not log typing or send synthetic keystrokes.
 
 For manual dictation, use **Ctrl + Alt + B** to focus Brinky, dictate using your configured Flow shortcut, and press Enter. Brinky observes the hold shortcut without simulating or consuming it. Flow uses its own account and settings; Brinky needs no Flow API key.
 
