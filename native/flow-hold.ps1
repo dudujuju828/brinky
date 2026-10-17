@@ -46,6 +46,8 @@ public static class BrinkyFlowHold {
   static bool IsTarget(IntPtr window) { uint pid; return window!=IntPtr.Zero && IsWindow(window) && GetWindowThreadProcessId(window,out pid)!=0 && pid==owner; }
   static void FocusTarget() {
     if (!IsTarget(target)) return;
+    // Electron may already have completed activation after the press event.
+    if (GetForegroundWindow()==target && !IsIconic(target)) return;
     // Called in response to a physical talk-key press, never by synthesizing keys.
     AllowSetForegroundWindow(owner);
     ShowWindowAsync(target,IsIconic(target)?9:5);
@@ -77,7 +79,9 @@ public static class BrinkyFlowHold {
   static void Press() {
     if (!enabled || physicalHeld) return;
     Cancel(); id=++sequence; pending=true; armed=false; released=false; began=clock.ElapsedMilliseconds;
-    physicalHeld=true; FocusTarget(); Emit("pressed",id);
+    // Let Electron open and prepare the composer while native activation runs.
+    // Window activation must not delay delivery of the physical key press.
+    physicalHeld=true; Emit("pressed",id); FocusTarget();
   }
   static void Key(KEYBOARD input) {
     if (input.key>=255 || input.scan==0xFF) return;

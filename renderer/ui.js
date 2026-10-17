@@ -1,11 +1,15 @@
 const $ = id => document.getElementById(id);
 let current, lastModels='', lastDisplays='';
-let flowDraft, flowSendTimer, flowValueTimer;
+let flowDraft, flowSendTimer, flowValueTimer, flowFocusFrame;
+function cancelFlowFocusCheck() {
+  cancelAnimationFrame(flowFocusFrame); flowFocusFrame=undefined;
+  if(flowDraft)flowDraft.readyPending=false;
+}
 function syncFlow(state) {
-  if (!state.flow) { clearTimeout(flowSendTimer); flowSendTimer=undefined; clearInterval(flowValueTimer); flowDraft=undefined; return; }
+  if (!state.flow) { cancelFlowFocusCheck(); clearTimeout(flowSendTimer); flowSendTimer=undefined; clearInterval(flowValueTimer); flowDraft=undefined; return; }
   if (flowDraft?.id !== state.flow.id) {
-    clearTimeout(flowSendTimer); flowSendTimer=undefined; clearInterval(flowValueTimer);
-    flowDraft={id:state.flow.id,changed:false,submitted:false,readyPending:false,readySince:0,baseline:$('prompt').value,lastValue:$('prompt').value,lastChange:performance.now()};
+    cancelFlowFocusCheck(); clearTimeout(flowSendTimer); flowSendTimer=undefined; clearInterval(flowValueTimer);
+    flowDraft={id:state.flow.id,changed:false,submitted:false,readyPending:false,baseline:$('prompt').value,lastValue:$('prompt').value,lastChange:performance.now()};
     tab('guide'); focusComposer();
     // Keep an existing draft and append dictation; never select or erase it.
     $('prompt').setSelectionRange($('prompt').value.length,$('prompt').value.length);
@@ -17,6 +21,23 @@ function focusComposer() {
   if(document.activeElement!==$('prompt'))$('prompt').focus({preventScroll:true});
 }
 function composerFocused() { return document.hasFocus()&&document.activeElement===$('prompt'); }
+function requestFlowStart() {
+  if(current?.flow?.phase!=='arming'||flowDraft?.readyPending||!composerFocused())return;
+  const draft=flowDraft; if(!draft)return;
+  draft.readyPending=true;
+  // Confirm focus across two rendered frames instead of waiting for the
+  // transcript polling timer. Main checks window focus again before dispatch.
+  const confirm=async remaining=>{
+    flowFocusFrame=undefined;
+    if(flowDraft!==draft||current?.flow?.phase!=='arming'||!composerFocused()){
+      draft.readyPending=false; return;
+    }
+    if(remaining){flowFocusFrame=requestAnimationFrame(()=>confirm(remaining-1));return;}
+    try { await call('flow-ready',{id:draft.id,focused:true}); }
+    finally { draft.readyPending=false; }
+  };
+  flowFocusFrame=requestAnimationFrame(()=>confirm(1));
+}
 function noteFlowValue() {
   if(!flowDraft||flowDraft.submitted)return;
   const value=$('prompt').value;
@@ -28,13 +49,7 @@ function noteFlowValue() {
 function pollFlowComposer() {
   if(!flowDraft||flowDraft.submitted||current?.flow?.id!==flowDraft.id)return;
   if(document.hasFocus())focusComposer();
-  const focused=composerFocused();
-  if(!focused)flowDraft.readySince=0;
-  else if(!flowDraft.readySince)flowDraft.readySince=performance.now();
-  if(current.flow.phase==='arming'&&focused&&performance.now()-flowDraft.readySince>=200&&!flowDraft.readyPending){
-    const draft=flowDraft; draft.readyPending=true;
-    call('flow-ready',{id:draft.id,focused:true}).finally(()=>{draft.readyPending=false;});
-  }
+  requestFlowStart();
   // Flow can change a textarea through accessibility without a DOM input event.
   noteFlowValue(); scheduleFlowSend();
 }
@@ -138,4 +153,7 @@ $('newLesson').onclick=()=>call('clear'); $('minimize').onclick=()=>call('hide')
 document.addEventListener('keydown',e=>{if(e.key==='Escape')call('stop');});
 window.brinky.onCompose(()=>{tab('guide');focusComposer();pollFlowComposer();});
 window.addEventListener('focus',pollFlowComposer);
+window.addEventListener('blur',cancelFlowFocusCheck);
+$('prompt').addEventListener('focus',pollFlowComposer);
+$('prompt').addEventListener('blur',cancelFlowFocusCheck);
 window.brinky.onState(render); window.brinky.call('state').then(state=>{render(state);if(state.settings.inputProvider==='wispr')$('prompt').focus();});
