@@ -3,8 +3,9 @@ import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createChatGPT, ChatGPTError, CHATGPT_USAGE_URL } from './chatgpt-runtime.mjs';
-import { guidanceSchema, guidanceInstructions, makeInput, parseGuidance, targetToRect } from './guidance.mjs';
+import { guidanceFormat, guidanceInstructions, makeInput, parseGuidance, targetToRect } from './guidance.mjs';
 import { Voice } from './voice.mjs';
+import { TutorialPlayer } from './tutorial.mjs';
 import { FlowHold } from './flow-hold.mjs';
 import { WisprFlow } from './wispr-flow.mjs';
 
@@ -23,7 +24,7 @@ let state = {
   settings: { model: '', displayId: '', speak: true, extendedAnswers: false, speechProvider: 'windows', inputProvider: 'windows', holdToTalk: true }, displays: [],
   phase: 'idle', transcript: '', answer: null, question: '', error: '',
   shortcut: 'Ctrl + Alt + B', captureTime: null, demo: false,
-  flow: null, holdShortcut: false,
+  flow: null, holdShortcut: false, tutorial: null,
 };
 const voice = new Voice(event => {
   if (event.type === 'playback-error') { state.error = event.message; publish(); return; }
@@ -44,6 +45,7 @@ const voice = new Voice(event => {
     return safeStorage.decryptString(await readFile(join(dataDir, 'elevenlabs-key.bin')));
   },
 });
+const tutorial = new TutorialPlayer(voice);
 const flowHold = new FlowHold(event => {
   if (event.type === 'ready') {
     state.holdShortcut = state.settings.inputProvider === 'wispr' && state.settings.holdToTalk;
@@ -133,7 +135,7 @@ function startFlowHold(id) {
   if (!flowHold.ready) { flowHold.start(); throw new Error('The voice shortcut is getting ready. Try holding M4 again in a moment.'); }
   endFlow();
   activeRequest?.abort(); activeRequest = undefined;
-  voice.cancel(); clearPointer(); state.error = ''; state.phase = 'idle';
+  tutorial.stop(); voice.cancel(); clearPointer(); state.error = ''; state.phase = 'idle';
   flowWasOnTop = panel.isAlwaysOnTop(); panel.setAlwaysOnTop(true); panel.flashFrame(false);
   state.flow = { id, phase: 'arming', held: true };
   flowFocusDeadline = Date.now() + 5000;
@@ -179,7 +181,7 @@ function clearPointer() {
 }
 function stop() {
   endFlow();
-  activeRequest?.abort(); voice.cancel(); clearPointer();
+  activeRequest?.abort(); tutorial.stop(); voice.cancel(); clearPointer();
   state.phase = 'idle'; state.transcript = ''; publish();
 }
 function getDisplay() {
@@ -190,7 +192,7 @@ function getDisplay() {
 function updateDisplays() {
   state.displays = screen.getAllDisplays().map((d,i) => ({ id: String(d.id), name: d.label || `Screen ${i+1}`, width: d.bounds.width, height: d.bounds.height }));
   if (!state.displays.some(d => d.id === state.settings.displayId)) state.settings.displayId = String(screen.getPrimaryDisplay().id);
-  clearPointer(); publish();
+  tutorial.stop(); clearPointer(); publish();
 }
 async function saveSettings() { await writeFile(join(dataDir, 'preferences.json'), JSON.stringify(state.settings, null, 2)); }
 async function refreshModels() {
@@ -220,16 +222,42 @@ async function capture(display, signal) {
     return `data:image/jpeg;base64,${source.thumbnail.toJPEG(85).toString('base64')}`;
   } finally { visible.forEach(w => { if (!w.isDestroyed()) w.showInactive(); }); }
 }
-async function showPointer(target, display, demo = false, extendedAnswers = false) {
-  clearPointer();
+async function showPointer(target, display, demo = false, extendedAnswers = false, cue = null) {
+  clearTimeout(pointerTimer);
+  if (!cue || !target) clearPointer();
   if (!target || !overlay || overlay.isDestroyed()) return;
   const current = screen.getAllDisplays().find(d => d.id === display.id);
-  if (!current || JSON.stringify(current.bounds) !== JSON.stringify(display.bounds)) return;
+  if (!current || JSON.stringify(current.bounds) !== JSON.stringify(display.bounds)) { clearPointer(); return; }
   overlay.setBounds(display.bounds);
-  pointer = { ...targetToRect(target, display.bounds), demo };
+  pointer = { ...targetToRect(target, display.bounds), demo, cue };
   overlay.webContents.send('brinky:pointer', pointer);
   overlay.showInactive();
-  pointerTimer = setTimeout(clearPointer, extendedAnswers ? 60000 : 18000);
+  if (!cue) pointerTimer = setTimeout(clearPointer, extendedAnswers ? 60000 : 18000);
+}
+async function presentAnswer(answer, display, visuals = true) {
+  tutorial.stop(); voice.stopSpeaking(); clearPointer();
+  if (answer.extendedAnswers && answer.segments?.length) {
+    state.tutorial = { index: -1, total: answer.segments.length, spoken: state.settings.speak };
+    publish();
+    tutorial.play(answer.segments, {
+      speak: state.settings.speak && !testMode,
+      onCue: (segment, index, total) => {
+        state.tutorial = { index, total, spoken: state.settings.speak };
+        if (visuals) void showPointer(segment.target, display, false, true, { index, total }).catch(reportError);
+        publish();
+      },
+      onEnd: cancelled => {
+        state.tutorial = null;
+        if (cancelled) clearPointer();
+        else if (pointer) pointerTimer = setTimeout(clearPointer, 18000);
+        publish();
+      },
+      onError: () => { state.error = 'Tutorial playback stopped. Your explanation is still here; use Repeat to try again.'; publish(); },
+    });
+    return;
+  }
+  if (visuals) await showPointer(answer.target, display, state.demo, answer.extendedAnswers);
+  if (state.settings.speak && !testMode) voice.speak(answer.instruction, { extendedAnswers: answer.extendedAnswers });
 }
 async function ask(rawQuestion) {
   if (activeRequest || accountBusy) throw new Error('Wait for this step, or press Stop first.');
@@ -240,7 +268,7 @@ async function ask(rawQuestion) {
   const display = getDisplay();
   const extendedAnswers = state.settings.extendedAnswers;
   endFlow();
-  voice.cancel(); clearPointer();
+  tutorial.stop(); voice.cancel(); clearPointer();
   const controller = new AbortController(); activeRequest = controller;
   state.phase = 'thinking'; state.error = ''; state.question = question; state.demo = false; state.transcript = ''; publish();
   try {
@@ -248,15 +276,14 @@ async function ask(rawQuestion) {
     state.captureTime = Date.now(); publish();
     const result = await chatgpt.streamResponse({ model: state.settings.model, instructions: guidanceInstructions(extendedAnswers),
       input: makeInput(history, question, screenshot),
-      textFormat: { type: 'json_schema', name: 'brinky_step', strict: true, schema: guidanceSchema },
+      textFormat: { type: 'json_schema', name: extendedAnswers ? 'brinky_tutorial' : 'brinky_step', strict: true, schema: guidanceFormat(extendedAnswers) },
       signal: controller.signal,
     });
     controller.signal.throwIfAborted();
     const answer = parseGuidance(result.text, { extendedAnswers });
     history = [...history, { role: 'user', content: question }, { role: 'assistant', content: JSON.stringify(answer) }].slice(-10);
     state.answer = { ...answer, extendedAnswers }; state.phase = 'ready'; lastDisplay = display;
-    await showPointer(answer.target, display, false, extendedAnswers);
-    if (state.settings.speak && !testMode) voice.speak(answer.instruction, { extendedAnswers });
+    await presentAnswer(state.answer, display);
     publish();
   } catch (error) {
     if (!controller.signal.aborted) { state.phase = 'idle'; reportError(error); }
@@ -264,6 +291,7 @@ async function ask(rawQuestion) {
 }
 function toggleVoice() {
   endFlow();
+  tutorial.stop();
   if (state.phase === 'listening' || state.phase === 'starting-mic') { voice.finish(); return; }
   if (!state.session.sharing) { showPanel(); throw new Error('Connect your ChatGPT account first.'); }
   if (activeRequest || accountBusy) throw new Error('Wait for the current step, or press Stop.');
@@ -330,19 +358,20 @@ function installIPC() {
           if (!payload || typeof payload !== 'object') throw new Error('Invalid settings.');
           if (activeRequest || accountBusy) throw new Error('Finish or stop the current request first.');
           if (payload.model !== undefined) { if (!state.models.some(m => m.slug === payload.model)) throw new Error('Choose an available model.'); state.settings.model = payload.model; }
-          if (payload.displayId !== undefined) { if (!state.displays.some(d => d.id === payload.displayId)) throw new Error('Choose an available screen.'); state.settings.displayId = payload.displayId; clearPointer(); }
-          if (typeof payload.speak === 'boolean') { state.settings.speak = payload.speak; if (!payload.speak) voice.stopSpeaking(); }
+          if (payload.displayId !== undefined) { if (!state.displays.some(d => d.id === payload.displayId)) throw new Error('Choose an available screen.'); tutorial.stop(); state.settings.displayId = payload.displayId; clearPointer(); }
+          if (typeof payload.speak === 'boolean') { tutorial.stop(); state.settings.speak = payload.speak; if (!payload.speak) voice.stopSpeaking(); }
           if (payload.extendedAnswers !== undefined) {
             if (typeof payload.extendedAnswers !== 'boolean') throw new Error('Choose whether to enable extended answers.');
+            tutorial.stop();
             state.settings.extendedAnswers = payload.extendedAnswers;
           }
           if (payload.speechProvider !== undefined) {
             if (!['windows', 'elevenlabs'].includes(payload.speechProvider)) throw new Error('Choose an available reply voice.');
-            voice.stopSpeaking(); state.settings.speechProvider = payload.speechProvider;
+            tutorial.stop(); voice.stopSpeaking(); state.settings.speechProvider = payload.speechProvider;
           }
           if (payload.inputProvider !== undefined) {
             if (!['windows', 'wispr'].includes(payload.inputProvider)) throw new Error('Choose an available voice input.');
-            voice.cancel(); state.phase = 'idle'; state.transcript = ''; state.settings.inputProvider = payload.inputProvider;
+            tutorial.stop(); voice.cancel(); state.phase = 'idle'; state.transcript = ''; state.settings.inputProvider = payload.inputProvider;
           }
           if (typeof payload.holdToTalk === 'boolean') state.settings.holdToTalk = payload.holdToTalk;
           if (payload.inputProvider !== undefined || typeof payload.holdToTalk === 'boolean') configureFlowHold();
@@ -372,7 +401,7 @@ function installIPC() {
         }
         case 'flow-cancel': if (state.flow?.id === payload?.id) endFlow(); break;
         case 'stop': stop(); break;
-        case 'repeat': if (state.answer) { if (state.settings.speak && !testMode) voice.speak(state.answer.instruction, { extendedAnswers: state.answer.extendedAnswers }); if (state.demo || (state.captureTime && Date.now()-state.captureTime < 30000)) await showPointer(state.answer.target,lastDisplay,state.demo,state.answer.extendedAnswers); } break;
+        case 'repeat': if (!activeRequest && !state.flow && state.answer) await presentAnswer(state.answer, lastDisplay, state.demo || Boolean(state.captureTime && Date.now()-state.captureTime < 30000)); break;
         case 'demo': if (accountBusy || activeRequest) throw new Error('Stop the current request first.'); await demo(); break;
         case 'clear': stop(); history=[]; state.answer=null; state.question=''; state.error=''; state.demo=false; state.captureTime=null; break;
         default: throw new Error('Unknown Brinky action.');
@@ -413,8 +442,8 @@ else {
     if (!globalShortcut.register('CommandOrControl+Alt+B',()=>{try{toggleVoice();}catch(e){reportError(e);}})) {state.shortcut='Shortcut unavailable'; state.error='Ctrl + Alt + B is in use. You can use the microphone button.';}
     globalShortcut.register('CommandOrControl+Alt+Escape',stop);
     configureFlowHold();
-    powerMonitor.on('lock-screen', () => { endFlow(); flowHold.send('reset', 0); publish(); });
-    powerMonitor.on('resume', () => { endFlow(); flowHold.send('reset', 0); publish(); });
+    powerMonitor.on('lock-screen', () => { tutorial.stop(); endFlow(); flowHold.send('reset', 0); publish(); });
+    powerMonitor.on('resume', () => { tutorial.stop(); endFlow(); flowHold.send('reset', 0); publish(); });
     screen.on('display-added',updateDisplays); screen.on('display-removed',updateDisplays); screen.on('display-metrics-changed',updateDisplays);
     await refreshModels().catch(reportError); publish();
   }).catch(error=>{ console.error('Brinky startup failed:',error.message); app.quit(); });

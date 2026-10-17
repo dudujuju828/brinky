@@ -8,3 +8,8 @@
 .learning-toggle:has(input:checked){background:var(--mint);border-color:#c8d8c1}
 .answer-card.teaching p{max-height:min(48vh,360px);padding-right:5px;overflow-wrap:anywhere}
 .visual-followup{align-self:flex-start;margin-top:12px;text-align:left;line-height:1.5}
+#answerText{position:relative}
+.answer-part{display:block;border-left:3px solid transparent;padding:5px 0 5px 9px;margin-bottom:9px;transition:background .2s,border-color .2s}
+.answer-part:last-child{margin-bottom:0}
+.answer-part.is-speaking{border-left-color:var(--green);background:#dfe9d8;border-radius:0 6px 6px 0;color:var(--ink)}
+.answer-card p.tutorial-progress{font-size:10px;font-weight:600;color:var(--green);margin:0 0 10px;max-height:none}

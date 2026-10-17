@@ -1,5 +1,24 @@
 const $ = id => document.getElementById(id);
 let current, lastModels='', lastDisplays='';
+let lastAnswerKey='', lastTutorialIndex=-1;
+function renderExplanation(answer, tutorial) {
+  const text=$('answerText'), key=JSON.stringify(answer.segments||answer.instruction);
+  if(key!==lastAnswerKey){
+    lastAnswerKey=key; text.replaceChildren();
+    if(answer.segments)answer.segments.forEach(segment=>{const part=document.createElement('span');part.className='answer-part';part.textContent=segment.text;text.append(part);});
+    else text.textContent=answer.instruction;
+    text.scrollTop=0; lastTutorialIndex=-1;
+  }
+  const index=tutorial?.index??-1;
+  Array.from(text.children).forEach((part,i)=>part.classList.toggle('is-speaking',i===index));
+  if(index!==lastTutorialIndex&&index>=0){
+    const part=text.children[index];
+    if(part&&(part.offsetTop<text.scrollTop||part.offsetTop+part.offsetHeight>text.scrollTop+text.clientHeight))text.scrollTop=Math.max(0,part.offsetTop-8);
+  }
+  lastTutorialIndex=index;
+  $('tutorialProgress').hidden=!tutorial;
+  $('tutorialProgress').textContent=!tutorial?'':index<0?'Preparing your tutorial…':`${tutorial.spoken?'Speaking':'Reading'} · part ${index+1} of ${tutorial.total}`;
+}
 let flowDraft, flowSendTimer, flowValueTimer, flowFocusFrame;
 function cancelFlowFocusCheck() {
   cancelAnimationFrame(flowFocusFrame); flowFocusFrame=undefined;
@@ -96,13 +115,15 @@ function render(state) {
   $('welcomeConnect').hidden=sharing;
   $('lesson').hidden=!state.answer||busy;
   if(state.answer) {
-    $('answerTitle').textContent=state.answer.title; $('answerText').textContent=state.answer.instruction;
+    $('answerTitle').textContent=state.answer.title; renderExplanation(state.answer,state.tutorial);
     $('lessonTag').textContent=state.demo?'POINTER PREVIEW':state.answer.extendedAnswers?'LEARN THE WHY':state.answer.done?'NICELY DONE':'ONE STEP AT A TIME';
     document.querySelector('.answer-card').classList.toggle('teaching',Boolean(state.answer.extendedAnswers));
     $('answerMeta').textContent=state.demo?'DEMO · NO SCREEN SHARED':'BRINKY SAYS';
     $('question').textContent=state.question; $('question').hidden=!state.question;
     $('next').disabled=state.demo||!sharing||busy;
     $('next').textContent=state.answer.done?(extendedAnswers?'Ask a follow-up':'Ask something new'):'Done, what’s next? →';
+    $('repeat').textContent=state.answer.segments?.length>1?'↺ Replay tutorial':'↺ Repeat';
+    $('repeat').disabled=busy;
   }
   $('showExample').hidden=!extendedAnswers||!state.answer||state.demo;
   $('showExample').disabled=busy||!sharing;

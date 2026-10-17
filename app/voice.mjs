@@ -62,24 +62,21 @@ export class Voice {
     child.stdin.end(JSON.stringify({ text }) + '\n');
     child.on('exit', () => { if (this.speaker === child) this.speaker = undefined; });
   }
-  async speakElevenLabs(text) {
-    const controller = new AbortController();
-    this.request = controller;
-    try {
+  async prepareAudio(text, signal) {
       let audio = this.audioCache.get(text);
       if (!audio) {
         const key = await this.options.getElevenLabsKey();
-        controller.signal.throwIfAborted();
+        signal.throwIfAborted();
         if (!key) throw new Error('Voice key unavailable.');
         const response = await fetch('https://api.elevenlabs.io/v1/text-to-speech/JBFqnCBsd6RMkjVDRZzb?output_format=pcm_24000', {
           method: 'POST', redirect: 'error',
           headers: { 'xi-api-key': key, 'Content-Type': 'application/json', Accept: 'audio/pcm' },
           body: JSON.stringify({ text, model_id: 'eleven_flash_v2_5', voice_settings: { stability: 0.5, similarity_boost: 0.75, style: 0, use_speaker_boost: true, speed: 1.0 } }),
-          signal: AbortSignal.any([controller.signal, AbortSignal.timeout(text.length > 1800 ? 90000 : 45000)]),
+          signal: AbortSignal.any([signal, AbortSignal.timeout(text.length > 1800 ? 90000 : 45000)]),
         });
         if (!response.ok) { await response.body?.cancel(); throw new Error('Voice service unavailable.'); }
         const pcm = Buffer.from(await response.arrayBuffer());
-        controller.signal.throwIfAborted();
+        signal.throwIfAborted();
         if (!pcm.length || pcm.length % 2 || pcm.length > (text.length > 1800 ? 24 : 12) * 1024 * 1024) throw new Error('Unexpected audio response.');
         // ElevenLabs PCM is mono, signed 16-bit little endian. SoundPlayer accepts a WAV container.
         const header = Buffer.alloc(44);
@@ -94,6 +91,14 @@ export class Voice {
         }
         if (audio.length <= 24 * 1024 * 1024) { this.audioCache.set(text, audio); this.cacheBytes += audio.length; }
       }
+      signal.throwIfAborted();
+      return audio;
+  }
+  async speakElevenLabs(text) {
+    const controller = new AbortController();
+    this.request = controller;
+    try {
+      const audio = await this.prepareAudio(text, controller.signal);
       if (this.request !== controller || controller.signal.aborted) return;
       let failed = false;
       const child = launch('play', () => {
@@ -111,7 +116,80 @@ export class Voice {
       this.speakWindows(text);
     } finally { if (this.request === controller) this.request = undefined; }
   }
+  async speakSequence(segments, { signal: parentSignal, onSegmentStart }) {
+    this.stopSpeaking();
+    const controller = new AbortController(); this.sequenceController = controller;
+    const signal = AbortSignal.any([parentSignal, controller.signal]);
+    signal.throwIfAborted();
+    let pending, readyResolve, readyReject, readyTimer, fatalError;
+    const ready = new Promise((resolve, reject) => { readyResolve = resolve; readyReject = reject; });
+    const fail = error => {
+      fatalError = error;
+      readyReject(error);
+      if (pending) { clearTimeout(pending.timer); pending.reject(error); pending = undefined; }
+    };
+    const child = launch('narrate', event => {
+      if (signal.aborted) return;
+      if (event.type === 'narration-ready') { clearTimeout(readyTimer); readyResolve(); return; }
+      if (event.type === 'error') { fail(new Error('Tutorial voice could not start.')); return; }
+      if (!pending || event.index !== pending.index) return;
+      if (event.type === 'segment-started') {
+        try { onSegmentStart(event.index); } catch (error) { fail(error); }
+      } else if (event.type === 'segment-finished' || event.type === 'segment-error') {
+        const part = pending; pending = undefined; clearTimeout(part.timer);
+        if (event.type === 'segment-finished') part.resolve();
+        else part.reject(Object.assign(new Error('Tutorial audio playback failed.'), { playbackFailed: true }));
+      }
+    });
+    this.speaker = child;
+    child.on('exit', () => fail(new Error('Tutorial voice stopped before completing the explanation.')));
+    child.stdin.on('error', () => fail(new Error('Tutorial voice is unavailable.')));
+    const abort = () => { fail(new Error('Tutorial cancelled.')); child.kill(); };
+    signal.addEventListener('abort', abort, { once: true });
+    readyTimer = setTimeout(() => fail(new Error('Tutorial voice took too long to start.')), 15000);
+    const play = (index, payload) => new Promise((resolve, reject) => {
+      signal.throwIfAborted();
+      if (fatalError) throw fatalError;
+      const timer = setTimeout(() => fail(new Error('Tutorial section took too long to finish.')), 180000);
+      pending = { index, resolve, reject, timer };
+      child.stdin.write(JSON.stringify({ index, ...payload }) + '\n', error => { if (error) fail(error); });
+    });
+    const prepare = text => this.prepareAudio(text, signal).then(audio => ({ audio }), error => ({ error }));
+    let natural = this.options.getProvider?.() === 'elevenlabs';
+    let nextAudio = natural && segments.length ? prepare(segments[0].text) : null;
+    const fallback = () => {
+      natural = false;
+      this.onEvent({ type: 'playback-error', message: 'Natural voice is unavailable for this tutorial. Continuing with Windows voice.' });
+    };
+    try {
+      await ready;
+      for (let index = 0; index < segments.length; index++) {
+        signal.throwIfAborted();
+        let audio;
+        if (natural) {
+          const prepared = await nextAudio; signal.throwIfAborted();
+          if (prepared.error) fallback();
+          else {
+            audio = prepared.audio;
+            // Fetch only one section ahead while the current section plays.
+            nextAudio = index + 1 < segments.length ? prepare(segments[index + 1].text) : null;
+          }
+        }
+        if (audio) {
+          try { await play(index, { audio: audio.toString('base64') }); }
+          catch (error) { signal.throwIfAborted(); if (!error.playbackFailed) throw error; fallback(); await play(index, { text: segments[index].text }); }
+        } else await play(index, { text: segments[index].text });
+      }
+    } finally {
+      signal.removeEventListener('abort', abort); clearTimeout(readyTimer);
+      if (pending) clearTimeout(pending.timer);
+      controller.abort(); child.stdin.end(); child.kill();
+      if (this.speaker === child) this.speaker = undefined;
+      if (this.sequenceController === controller) this.sequenceController = undefined;
+    }
+  }
   stopSpeaking() {
+    this.sequenceController?.abort(); this.sequenceController = undefined;
     this.request?.abort(); this.request = undefined;
     const old = this.speaker; this.speaker = undefined; old?.kill();
   }

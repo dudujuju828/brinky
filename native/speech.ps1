@@ -1,8 +1,47 @@
-param([ValidateSet('listen','speak','play','probe','selftest')][string]$Mode = 'probe')
+param([ValidateSet('listen','speak','play','narrate','probe','selftest')][string]$Mode = 'probe')
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
 [Console]::InputEncoding = New-Object System.Text.UTF8Encoding($false)
 try {
+  if ($Mode -eq 'narrate') {
+    $synth = $null
+    try {
+      [Console]::WriteLine('{"type":"narration-ready"}')
+      [Console]::Out.Flush()
+      while ($null -ne ($line = [Console]::In.ReadLine())) {
+        $index = -1
+        try {
+          $payload = $line | ConvertFrom-Json
+          $index = [int]$payload.index
+          if ($index -lt 0 -or $index -gt 7) { throw 'Invalid tutorial section.' }
+          if ($payload.audio) {
+            $bytes = [Convert]::FromBase64String([string]$payload.audio)
+            $stream = New-Object System.IO.MemoryStream(,$bytes)
+            $player = New-Object System.Media.SoundPlayer($stream)
+            try {
+              $player.Load()
+              [Console]::WriteLine('{"type":"segment-started","index":' + $index + '}'); [Console]::Out.Flush()
+              $player.PlaySync()
+            } finally { $player.Dispose(); $stream.Dispose() }
+          } else {
+            if ($null -eq $synth) {
+              Add-Type -AssemblyName System.Speech
+              $synth = New-Object System.Speech.Synthesis.SpeechSynthesizer
+              $synth.Rate = 0
+            }
+            $text = [string]$payload.text
+            if (-not $text.Trim() -or $text.Length -gt 1000) { throw 'Invalid tutorial text.' }
+            [Console]::WriteLine('{"type":"segment-started","index":' + $index + '}'); [Console]::Out.Flush()
+            $synth.Speak($text)
+          }
+          [Console]::WriteLine('{"type":"segment-finished","index":' + $index + '}'); [Console]::Out.Flush()
+        } catch {
+          [Console]::WriteLine('{"type":"segment-error","index":' + $index + '}'); [Console]::Out.Flush()
+        }
+      }
+    } finally { if ($null -ne $synth) { $synth.Dispose() } }
+    exit 0
+  }
   if ($Mode -eq 'play') {
     $payload = [Console]::In.ReadLine() | ConvertFrom-Json
     $bytes = [Convert]::FromBase64String([string]$payload.audio)

@@ -29,7 +29,11 @@ npm start
 
 Check **Extended answers** on the Guide tab to learn the concepts behind a task. Brinky explains what something means, why it works, and when to use it, with examples and visual pointers tied to your screen. It can answer conceptual questions without requiring a click, or offer one practical step to try. The checkbox is off by default, and its choice is saved between launches. Unchecked, Brinky keeps its original brief, one-step guidance.
 
-Teaching replies usually use 150–350 words and can be read aloud in full with either reply voice. Their pointer stays visible for up to a minute. **Show me an example on my screen** takes a fresh screenshot and asks for a relevant visual example; **Ask a follow-up** keeps the lesson context. Longer spoken replies use more of your chosen voice provider's allowance.
+Teaching replies usually use 150–350 words, divided into up to eight short sections. Each section can highlight a different visible control, object, or region. With **Speak answers** on, the pointer changes when that section's audio starts, using playback events rather than guessed voice durations. The next audio section is prepared while the current one plays. Both ElevenLabs and Windows speech support this; ElevenLabs can fall back to Windows speech if unavailable. With speech off, the AI supplies a reading duration for each section, normally about ten seconds (bounded to 6–30 seconds).
+
+The current paragraph is highlighted in the answer, and the pointer shows the section number. A section with no visual target clears the previous pointer. **Stop**, Esc, a new M4 question, changing voice/screen settings, or starting another lesson cancels the sequence. **Replay tutorial** repeats the explanation; as with brief replies, replay only redraws pointers while the source screenshot is under 30 seconds old. **Show me an example on my screen** takes a fresh screenshot and asks for a new visual example. **Ask a follow-up** keeps the lesson context. Longer spoken replies use more of your chosen voice provider's allowance.
+
+Every pointer in a tutorial refers to something visible in the same captured screen. These are visual explanations, not automatic actions: if a step changes the interface, Brinky waits for you and a fresh screenshot before guiding a further action.
 
 ## Hold to talk with Wispr Flow
 
@@ -91,7 +95,7 @@ The app uses Electron, a plain HTML/CSS/JavaScript interface, and PowerShell hel
 
 ## Limitations
 
-- Model pointing can be wrong, especially for small icons. Invalid boxes are discarded; the marker fades after 18 seconds, or 60 seconds for extended answers. Each next step captures fresh context.
+- Model pointing can be wrong, especially for small icons. Invalid boxes are discarded. Brief pointers fade after 18 seconds; tutorial pointers follow their explanation sections and the final pointer fades after 18 seconds. Each new question or action follow-up captures fresh context.
 - Capture covers a display, not an individual app window. Multi-monitor scaling combinations need further field testing.
 - Voice recognition depends on the microphone and chosen provider. Typing is always available.
 - This is a prototype. The Flow handoff and ElevenLabs integration have not been covered by the included mock tests.
